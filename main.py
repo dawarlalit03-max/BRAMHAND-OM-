@@ -11,19 +11,13 @@ import yfinance as yf
 import ta
 import pytz
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-फालतू चेतावनियों को रोकना
-
-warnings.filterwarnings("ignore")
-
---- ⚙️ CONFIGURATION (Lalit's Settings) ---
+from concurrent.futures import ThreadPoolExecutor, 
 
 IST = pytz.timezone("Asia/Kolkata")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 DB_FILE = "brahmand_kavach_v31.db"
-
+# --- CONFIGURATION (Lalit's Settings) ---
 INITIAL_CAPITAL = 100000
 RISK_PER_TRADE = 0.015    # 1.5% Risk per trade
 MAX_OPEN_TRADES = 5
