@@ -31,7 +31,7 @@ LAST_UPDATE_ID = 0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
---- 📲 TELEGRAM CORE ---
+#--- 📲 TELEGRAM CORE ---
 
 def send_telegram(message):
 if not BOT_TOKEN or not CHAT_ID: return
@@ -41,7 +41,7 @@ payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
 requests.post(url, data=payload, timeout=15)
 except Exception as e: logging.error(f"Telegram Error: {e}")
 
---- 📊 REPORTING & GREETINGS ---
+#--- 📊 REPORTING & GREETINGS ---
 
 def get_pnl_report(days=1):
 conn = sqlite3.connect(DB_FILE)
@@ -67,7 +67,7 @@ report = get_pnl_report(1)
 send_telegram(f"📉 आज की क्लोजिंग रिपोर्ट: \n\n{report}")
 LAST_REPORT_DATE = today
 
---- 🗄️ DATABASE ---
+#--- 🗄️ DATABASE ---
 
 def init_db():
 conn = sqlite3.connect(DB_FILE)
@@ -75,7 +75,7 @@ conn.execute("CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY AUTOINCR
 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_open_symbol ON trades(symbol) WHERE status='OPEN'")
 conn.commit(); conn.close()
 
---- 🔍 ANALYSIS LOGIC (Anti-Sideways) ---
+#--- 🔍 ANALYSIS LOGIC (Anti-Sideways) ---
 
 def analyze_stock(symbol):
 try:
@@ -101,7 +101,7 @@ qty = min(int((INITIAL_CAPITAL * RISK_PER_TRADE) / (price - sl)), int((INITIAL_C
 if qty > 0: return {"symbol": symbol, "price": round(price, 2), "sl": sl, "target": target, "qty": qty}
 except: return None
 
---- 🔄 MONITORING ---
+#--- 🔄 MONITORING ---
 
 def manage_exits():
 conn = sqlite3.connect(DB_FILE)
@@ -123,7 +123,7 @@ send_telegram(f"🔴 EXIT: {sym} | {reason}\nPrice: ₹{current:.2f} | P&L: ₹{
 except: continue
 conn.commit(); conn.close()
 
---- 🤖 TELEGRAM COMMANDS ---
+#--- 🤖 TELEGRAM COMMANDS ---
 
 def check_telegram_commands():
 global LAST_UPDATE_ID
