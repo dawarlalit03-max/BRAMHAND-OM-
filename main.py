@@ -1,4 +1,4 @@
-              import os
+import os
 import time
 import sqlite3
 import threading
@@ -14,8 +14,7 @@ import pytz
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
---- CONFIGURATION ---
-
+# --- CONFIGURATION ---
 warnings.filterwarnings("ignore")
 IST = pytz.timezone("Asia/Kolkata")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -33,205 +32,183 @@ LAST_UPDATE_ID = 0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
---- DYNAMIC LOGIC ---
-
+# --- DYNAMIC LOGIC ---
 def get_dynamic_config():
-conn = sqlite3.connect(DB_FILE)
-total_pnl = conn.execute("SELECT SUM(pnl) FROM trades WHERE status='CLOSED'").fetchone()[0] or 0
-conn.close()
-current_total_cap = BASE_CAPITAL + total_pnl
-max_slots = 5 + max(0, int(total_pnl // 100000))
-return current_total_cap, max_slots
+    conn = sqlite3.connect(DB_FILE)
+    total_pnl = conn.execute("SELECT SUM(pnl) FROM trades WHERE status='CLOSED'").fetchone()[0] or 0
+    conn.close()
+    current_total_cap = BASE_CAPITAL + total_pnl
+    max_slots = 5 + max(0, int(total_pnl // 100000))
+    return current_total_cap, max_slots
 
 def get_available_capital():
-total_cap, _ = get_dynamic_config()
-conn = sqlite3.connect(DB_FILE)
-rows = conn.execute("SELECT entry, qty FROM trades WHERE status='OPEN'").fetchall()
-conn.close()
-invested = sum(entry * qty for entry, qty in rows)
-return max(0, total_cap - invested)
+    total_cap, _ = get_dynamic_config()
+    conn = sqlite3.connect(DB_FILE)
+    rows = conn.execute("SELECT entry, qty FROM trades WHERE status='OPEN'").fetchall()
+    conn.close()
+    invested = sum(entry * qty for entry, qty in rows)
+    return max(0, total_cap - invested)
 
---- TELEGRAM CORE ---
-
+# --- TELEGRAM CORE ---
 def send_telegram(message):
-if not BOT_TOKEN or not CHAT_ID: return
-try:
-url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-requests.post(url, data=payload, timeout=15)
-except Exception as e: logging.error(f"Telegram Error: {e}")
+    if not BOT_TOKEN or not CHAT_ID: return
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+        requests.post(url, data=payload, timeout=15)
+    except Exception as e: logging.error(f"Telegram Error: {e}")
 
---- DATABASE ---
-
+# --- DATABASE ---
 def init_db():
-conn = sqlite3.connect(DB_FILE)
-conn.execute("PRAGMA journal_mode=WAL")
-conn.execute("PRAGMA synchronous=NORMAL")
-conn.execute("""CREATE TABLE IF NOT EXISTS trades (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-symbol TEXT NOT NULL,
-entry REAL NOT NULL,
-sl REAL NOT NULL,
-target REAL NOT NULL,
-qty INTEGER NOT NULL,
-status TEXT NOT NULL,
-highest_price REAL,
-entry_time TEXT,
-exit_time TEXT,
-pnl REAL DEFAULT 0)""")
-conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_open_symbol ON trades(symbol) WHERE status='OPEN'")
-conn.commit()
-conn.close()
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("""CREATE TABLE IF NOT EXISTS trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, 
+        symbol TEXT NOT NULL, 
+        entry REAL NOT NULL, 
+        sl REAL NOT NULL, 
+        target REAL NOT NULL, 
+        qty INTEGER NOT NULL, 
+        status TEXT NOT NULL, 
+        highest_price REAL, 
+        entry_time TEXT, 
+        exit_time TEXT, 
+        pnl REAL DEFAULT 0)""")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_open_symbol ON trades(symbol) WHERE status='OPEN'")
+    conn.commit()
+    conn.close()
 
---- V8 ANALYSIS ---
-
+# --- V8 ANALYSIS ---
 def analyze_stock(symbol):
-try:
-time.sleep(random.uniform(1.0, 2.0))
-df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True, threads=False)
+    try:
+        time.sleep(random.uniform(1.0, 2.0))
+        df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True, threads=False)
+        if df.empty or len(df) < 220: return None
+        close, high, low, vol = df["Close"], df["High"], df["Low"], df["Volume"]
+        ema50 = close.ewm(span=50).mean()
+        ema200 = close.ewm(span=200).mean()
+        rsi = ta.momentum.RSIIndicator(close, 14).rsi()
+        adx = ta.trend.ADXIndicator(high, low, close, 14).adx()
+        atr = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
+        price = float(close.iloc[-1])
+        ema_slope = (ema50.iloc[-1] - ema50.iloc[-5]) / ema50.iloc[-5] * 100
+        vol_breakout = vol.iloc[-1] > vol.rolling(20).mean().iloc[-1] * 2.5
+        bullish = price > ema50.iloc[-1] > ema200.iloc[-1]
+        momentum = (50 < rsi.iloc[-1] < 66) and (adx.iloc[-1] > 25) and (ema_slope > 0.2)
+        if bullish and momentum and vol_breakout:
+            current_cap, max_slots = get_dynamic_config()
+            available_cap = get_available_capital()
+            if available_cap < price: return None
+            sl = round(price - (2 * atr.iloc[-1]), 2)
+            target = round(price + (4 * atr.iloc[-1]), 2)
+            risk_qty = int((current_cap * RISK_PER_TRADE) / (price - sl))
+            capital_qty = int((available_cap / max_slots) / price)
+            qty = min(risk_qty, capital_qty)
+            if qty > 0: return {"symbol": symbol, "price": round(price, 2), "sl": sl, "target": target, "qty": qty}
+    except: return None
 
-if df.empty or len(df) < 220: return None  
-      
-    close, high, low, vol = df["Close"], df["High"], df["Low"], df["Volume"]  
-    ema50 = close.ewm(span=50).mean()  
-    ema200 = close.ewm(span=200).mean()  
-    rsi = ta.momentum.RSIIndicator(close, 14).rsi()  
-    adx = ta.trend.ADXIndicator(high, low, close, 14).adx()  
-    atr = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()  
-    price = float(close.iloc[-1])  
-      
-    ema_slope = (ema50.iloc[-1] - ema50.iloc[-5]) / ema50.iloc[-5] * 100  
-    vol_breakout = vol.iloc[-1] > vol.rolling(20).mean().iloc[-1] * 2.5  
-    bullish = price > ema50.iloc[-1] > ema200.iloc[-1]  
-    momentum = (50 < rsi.iloc[-1] < 66) and (adx.iloc[-1] > 25) and (ema_slope > 0.2)  
-      
-    if bullish and momentum and vol_breakout:  
-        current_cap, max_slots = get_dynamic_config()  
-        available_cap = get_available_capital()  
-          
-        if available_cap < price: return None  
-          
-        sl = round(price - (2 * atr.iloc[-1]), 2)  
-        target = round(price + (4 * atr.iloc[-1]), 2)  
-          
-        risk_qty = int((current_cap * RISK_PER_TRADE) / (price - sl))  
-        capital_qty = int((available_cap / max_slots) / price)  
-          
-        qty = min(risk_qty, capital_qty)  
-        if qty > 0: return {"symbol": symbol, "price": round(price, 2), "sl": sl, "target": target, "qty": qty}  
-except: return None
-
---- MONITORING ---
-
+# --- MONITORING ---
 def manage_exits():
-conn = sqlite3.connect(DB_FILE)
-conn.execute("PRAGMA journal_mode=WAL")
-trades = conn.execute("SELECT id, symbol, entry, sl, target, qty, highest_price FROM trades WHERE status='OPEN'").fetchall()
-for tid, sym, entry, current_sl, target, qty, high_price in trades:
-try:
-df = yf.download(sym, period="2d", interval="5m", progress=False, auto_adjust=True, threads=False)
-if df.empty: continue
-current = float(df["Close"].iloc[-1])
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA journal_mode=WAL")
+    trades = conn.execute("SELECT id, symbol, entry, sl, target, qty, highest_price FROM trades WHERE status='OPEN'").fetchall()
+    for tid, sym, entry, current_sl, target, qty, high_price in trades:
+        try:
+            df = yf.download(sym, period="2d", interval="5m", progress=False, auto_adjust=True, threads=False)
+            if df.empty: continue
+            current = float(df["Close"].iloc[-1])
+            if current > high_price:
+                high_price = current
+                new_sl = max(current_sl, high_price * 0.97)
+                conn.execute("UPDATE trades SET sl=?, highest_price=? WHERE id=?", (new_sl, high_price, tid))
+                current_sl = new_sl
+            if current <= current_sl or current >= target:
+                pnl = round((current - entry) * qty, 2)
+                conn.execute("UPDATE trades SET status='CLOSED', exit_time=?, pnl=? WHERE id=?", (datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"), pnl, tid))
+                send_telegram(f"EXIT: {sym} | P&L: {pnl:,.2f}")
+        except: continue
+    conn.commit()
+    conn.close()
 
-if current > high_price:  
-            high_price = current  
-            new_sl = max(current_sl, high_price * 0.97)  
-            conn.execute("UPDATE trades SET sl=?, highest_price=? WHERE id=?", (new_sl, high_price, tid))  
-            current_sl = new_sl  
-          
-        if current <= current_sl or current >= target:  
-            pnl = round((current - entry) * qty, 2)  
-            conn.execute("UPDATE trades SET status='CLOSED', exit_time=?, pnl=? WHERE id=?", (datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"), pnl, tid))  
-            send_telegram(f"EXIT: {sym} | P&L: {pnl:,.2f}")  
-    except: continue  
-conn.commit()  
-conn.close()
-
---- TELEGRAM COMMANDS ---
-
+# --- TELEGRAM COMMANDS ---
 def check_telegram_commands():
-global LAST_UPDATE_ID
-try:
-url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-res = requests.get(url, params={"offset": LAST_UPDATE_ID, "timeout": 1}, timeout=5).json()
-for up in res.get("result", []):
-LAST_UPDATE_ID = up["update_id"] + 1
-if str(up.get("message", {}).get("chat", {}).get("id")) != str(CHAT_ID): continue
+    global LAST_UPDATE_ID
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+        res = requests.get(url, params={"offset": LAST_UPDATE_ID, "timeout": 1}, timeout=5).json()
+        for up in res.get("result", []):
+            LAST_UPDATE_ID = up["update_id"] + 1
+            if str(up.get("message", {}).get("chat", {}).get("id")) != str(CHAT_ID): continue
+            text = up.get("message", {}).get("text", "").strip()
+            if text == "#status":
+                cap, slots = get_dynamic_config()
+                avail = get_available_capital()
+                conn = sqlite3.connect(DB_FILE)
+                open_tr = conn.execute("SELECT symbol FROM trades WHERE status='OPEN'").fetchall()
+                conn.close()
+                msg = f"STATUS: Brahmand Kavach v31.6\nCapital: {cap:,.0f}\nAvailable: {avail:,.0f}\nSlots: {slots}\nOpen: {len(open_tr)}"
+                send_telegram(msg)
+    except: pass
 
-text = up.get("message", {}).get("text", "").strip()  
-        if text == "#status":  
-            cap, slots = get_dynamic_config()  
-            avail = get_available_capital()  
-            conn = sqlite3.connect(DB_FILE)  
-            open_tr = conn.execute("SELECT symbol FROM trades WHERE status='OPEN'").fetchall()  
-            conn.close()  
-            msg = f"STATUS: Brahmand Kavach v31.6\nCapital: {cap:,.0f}\nAvailable: {avail:,.0f}\nSlots: {slots}\nOpen: {len(open_tr)}"  
-            send_telegram(msg)  
-except: pass
-
---- HEALTH SERVER ---
-
+# --- HEALTH SERVER ---
 class HealthHandler(BaseHTTPRequestHandler):
-def do_GET(self):
-self.send_response(200)
-self.end_headers()
-self.wfile.write(b"Live")
-def log_message(self, format, *args): return
+    def do_GET(self): 
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Live")
+    def log_message(self, format, *args): return
 
 def market_open():
-now = datetime.now(IST)
-curr = now.hour * 60 + now.minute
-return now.weekday() < 5 and 555 <= curr <= 930
+    now = datetime.now(IST)
+    curr = now.hour * 60 + now.minute
+    return now.weekday() < 5 and 555 <= curr <= 930
 
---- MAIN ENGINE ---
-
+# --- MAIN ENGINE ---
 def run():
-init_db()
-port = int(os.environ.get("PORT", 10000))
-server = HTTPServer(("0.0.0.0", port), HealthHandler)
-threading.Thread(target=server.serve_forever, daemon=True).start()
-send_telegram("SYSTEM START: Brahmand Kavach v31.6 is online.")
+    init_db()
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    send_telegram("SYSTEM START: Brahmand Kavach v31.6 is online.")
+    try: symbols = (pd.read_csv(NSE500_URL)["Symbol"] + ".NS").tolist()
+    except: symbols = []
+    while True:
+        try:
+            check_telegram_commands()
+            manage_exits()
+            if market_open():
+                _, max_slots = get_dynamic_config()
+                conn = sqlite3.connect(DB_FILE)
+                current_open = conn.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()[0]
+                if current_open >= max_slots:
+                    conn.close()
+                else:
+                    conn.close()
+                    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                        futures = {executor.submit(analyze_stock, s): s for s in symbols}
+                        for f in as_completed(futures):
+                            conn = sqlite3.connect(DB_FILE)
+                            now_open = conn.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()[0]
+                            if now_open >= max_slots:
+                                conn.close()
+                                executor.shutdown(wait=False, cancel_futures=True)
+                                break
+                            conn.close()
+                            res = f.result()
+                            if res:
+                                conn = sqlite3.connect(DB_FILE)
+                                try:
+                                    conn.execute("INSERT INTO trades (symbol, entry, sl, target, qty, status, highest_price, entry_time) VALUES (?,?,?,?,?,?,?,?)", (res['symbol'], res['price'], res['sl'], res['target'], res['qty'], "OPEN", res['price'], datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")))
+                                    conn.commit()
+                                    send_telegram(f"BUY: {res['symbol']} | Price: {res['price']} | Qty: {res['qty']}")
+                                except: pass
+                                finally: conn.close()
+            time.sleep(SCAN_INTERVAL)
+        except Exception as e: 
+            logging.error(f"Error: {e}")
+            time.sleep(30)
 
-try: symbols = (pd.read_csv(NSE500_URL)["Symbol"] + ".NS").tolist()  
-except: symbols = []  
+if __name__ == "__main__":
+    run()
 
-while True:  
-    try:  
-        check_telegram_commands()  
-        manage_exits()  
-        if market_open():  
-            _, max_slots = get_dynamic_config()  
-            conn = sqlite3.connect(DB_FILE)  
-            current_open = conn.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()[0]  
-              
-            if current_open >= max_slots:  
-                conn.close()  
-            else:  
-                conn.close()  
-                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:  
-                    futures = {executor.submit(analyze_stock, s): s for s in symbols}  
-                    for f in as_completed(futures):  
-                        conn = sqlite3.connect(DB_FILE)  
-                        now_open = conn.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()[0]  
-                        if now_open >= max_slots:  
-                            conn.close()  
-                            executor.shutdown(wait=False, cancel_futures=True)  
-                            break  
-                        conn.close()  
-                          
-                        res = f.result()  
-                        if res:  
-                            conn = sqlite3.connect(DB_FILE)  
-                            try:  
-                                conn.execute("INSERT INTO trades (symbol, entry, sl, target, qty, status, highest_price, entry_time) VALUES (?,?,?,?,?,?,?,?)", (res['symbol'], res['price'], res['sl'], res['target'], res['qty'], "OPEN", res['price'], datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")))  
-                                conn.commit()  
-                                send_telegram(f"BUY: {res['symbol']} | Price: {res['price']} | Qty: {res['qty']}")  
-                            except: pass  
-                            finally: conn.close()  
-        time.sleep(SCAN_INTERVAL)  
-    except Exception as e:   
-        logging.error(f"Error: {e}")  
-        time.sleep(30)
-
-if name == "main":
-run()                                            send_telegram(f"🟢 *BUY:*                             except 
