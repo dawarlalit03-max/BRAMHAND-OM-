@@ -1,214 +1,807 @@
+# 🚩 जय श्री राम - V43.5 BRAHMASTRA PRO FINAL 🚩
+
 import os
 import time
-import sqlite3
-import threading
-import logging
-import warnings
-import random
-from datetime import datetime, timedelta
-import pandas as pd
-import requests
-import yfinance as yf
-import ta
+import json
 import pytz
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import telebot
+import yfinance as yf
+import pandas as pd
 
-# --- CONFIGURATION ---
-warnings.filterwarnings("ignore")
+from flask import Flask
+from threading import Thread
+from datetime import datetime
+from ta.trend import ADXIndicator
+
+# ================= CONFIG =================
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+bot = telebot.TeleBot(BOT_TOKEN)
+
 IST = pytz.timezone("Asia/Kolkata")
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-DB_FILE = "brahmand_kavach_v31_6.db"
-NSE500_URL = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
 
-BASE_CAPITAL = 100000
-RISK_PER_TRADE = 0.015
-SCAN_INTERVAL = 1800
-MAX_WORKERS = 2
+DATA_FILE = "v43_state.json"
 
-LAST_GREETING_DATE = None
-LAST_UPDATE_ID = 0
+CAPITAL = 100000
+RISK_PER_TRADE = 0.01
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+MAX_POSITIONS = 4
+MAX_SECTOR_POSITIONS = 2
 
-# --- DYNAMIC LOGIC ---
-def get_dynamic_config():
-    conn = sqlite3.connect(DB_FILE)
-    total_pnl = conn.execute("SELECT SUM(pnl) FROM trades WHERE status='CLOSED'").fetchone()[0] or 0
-    conn.close()
-    current_total_cap = BASE_CAPITAL + total_pnl
-    max_slots = 5 + max(0, int(total_pnl // 100000))
-    return current_total_cap, max_slots
+DAILY_LOSS_LIMIT = -1500
 
-def get_available_capital():
-    total_cap, _ = get_dynamic_config()
-    conn = sqlite3.connect(DB_FILE)
-    rows = conn.execute("SELECT entry, qty FROM trades WHERE status='OPEN'").fetchall()
-    conn.close()
-    invested = sum(entry * qty for entry, qty in rows)
-    return max(0, total_cap - invested)
+ATR_SL_MULTIPLIER = 1.5
+ATR_TARGET_MULTIPLIER = 4.0
 
-# --- TELEGRAM CORE ---
-def send_telegram(message):
-    if not BOT_TOKEN or not CHAT_ID: return
+BREAK_EVEN_TRIGGER = 0.02
+PARTIAL_BOOK_TRIGGER = 0.06
+PARTIAL_BOOK_QTY = 0.50
+
+AUTO_EXIT_DAYS = 3
+
+ADX_THRESHOLD = 25
+
+# ===== UPDATED =====
+SCAN_INTERVAL = 300
+MONITOR_INTERVAL = 120
+BATCH_SIZE = 50
+
+# ================= FLASK =================
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🚩 V43.5 BRAHMASTRA PRO LIVE 🚩"
+
+# ================= STORAGE =================
+
+def safe_save():
+
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-        requests.post(url, data=payload, timeout=15)
-    except Exception as e: logging.error(f"Telegram Error: {e}")
 
-# --- DATABASE ---
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("""CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        symbol TEXT NOT NULL, 
-        entry REAL NOT NULL, 
-        sl REAL NOT NULL, 
-        target REAL NOT NULL, 
-        qty INTEGER NOT NULL, 
-        status TEXT NOT NULL, 
-        highest_price REAL, 
-        entry_time TEXT, 
-        exit_time TEXT, 
-        pnl REAL DEFAULT 0)""")
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_open_symbol ON trades(symbol) WHERE status='OPEN'")
-    conn.commit()
-    conn.close()
+        data = {
+            "positions": POSITIONS,
+            "daily_pnl": DAILY_PNL,
+            "wins": WINS,
+            "losses": LOSSES,
+            "date": str(datetime.now(IST).date())
+        }
 
-# --- V8 ANALYSIS ---
-def analyze_stock(symbol):
-    try:
-        time.sleep(random.uniform(1.0, 2.0))
-        df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True, threads=False)
-        if df.empty or len(df) < 220: return None
-        close, high, low, vol = df["Close"], df["High"], df["Low"], df["Volume"]
-        ema50 = close.ewm(span=50).mean()
-        ema200 = close.ewm(span=200).mean()
-        rsi = ta.momentum.RSIIndicator(close, 14).rsi()
-        adx = ta.trend.ADXIndicator(high, low, close, 14).adx()
-        atr = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
-        price = float(close.iloc[-1])
-        ema_slope = (ema50.iloc[-1] - ema50.iloc[-5]) / ema50.iloc[-5] * 100
-        vol_breakout = vol.iloc[-1] > vol.rolling(20).mean().iloc[-1] * 2.5
-        bullish = price > ema50.iloc[-1] > ema200.iloc[-1]
-        momentum = (50 < rsi.iloc[-1] < 66) and (adx.iloc[-1] > 25) and (ema_slope > 0.2)
-        if bullish and momentum and vol_breakout:
-            current_cap, max_slots = get_dynamic_config()
-            available_cap = get_available_capital()
-            if available_cap < price: return None
-            sl = round(price - (2 * atr.iloc[-1]), 2)
-            target = round(price + (4 * atr.iloc[-1]), 2)
-            risk_qty = int((current_cap * RISK_PER_TRADE) / (price - sl))
-            capital_qty = int((available_cap / max_slots) / price)
-            qty = min(risk_qty, capital_qty)
-            if qty > 0: return {"symbol": symbol, "price": round(price, 2), "sl": sl, "target": target, "qty": qty}
-    except: return None
+        temp_file = DATA_FILE + ".tmp"
 
-# --- MONITORING ---
-def manage_exits():
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("PRAGMA journal_mode=WAL")
-    trades = conn.execute("SELECT id, symbol, entry, sl, target, qty, highest_price FROM trades WHERE status='OPEN'").fetchall()
-    for tid, sym, entry, current_sl, target, qty, high_price in trades:
+        with open(temp_file, "w") as f:
+            json.dump(data, f)
+
+        os.replace(temp_file, DATA_FILE)
+
+    except Exception as e:
+        print(f"SAVE ERROR: {e}")
+
+def load_data():
+
+    if os.path.exists(DATA_FILE):
+
         try:
-            df = yf.download(sym, period="2d", interval="5m", progress=False, auto_adjust=True, threads=False)
-            if df.empty: continue
-            current = float(df["Close"].iloc[-1])
-            if current > high_price:
-                high_price = current
-                new_sl = max(current_sl, high_price * 0.97)
-                conn.execute("UPDATE trades SET sl=?, highest_price=? WHERE id=?", (new_sl, high_price, tid))
-                current_sl = new_sl
-            if current <= current_sl or current >= target:
-                pnl = round((current - entry) * qty, 2)
-                conn.execute("UPDATE trades SET status='CLOSED', exit_time=?, pnl=? WHERE id=?", (datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"), pnl, tid))
-                send_telegram(f"EXIT: {sym} | P&L: {pnl:,.2f}")
-        except: continue
-    conn.commit()
-    conn.close()
 
-# --- TELEGRAM COMMANDS ---
-def check_telegram_commands():
-    global LAST_UPDATE_ID
+            with open(DATA_FILE, "r") as f:
+                data = json.load(f)
+
+            if data.get("date") == str(datetime.now(IST).date()):
+
+                return (
+                    data.get("positions", {}),
+                    data.get("daily_pnl", 0),
+                    data.get("wins", 0),
+                    data.get("losses", 0)
+                )
+
+        except:
+            pass
+
+    return {}, 0, 0, 0
+
+POSITIONS, DAILY_PNL, WINS, LOSSES = load_data()
+
+TRADING_HALTED = False
+
+LAST_SCAN = ""
+LAST_MONITOR = 0
+
+MORNING_SENT = False
+EVENING_SENT = False
+
+SCAN_INDEX = 0
+
+# ================= TELEGRAM =================
+
+def send_msg(msg):
+
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-        res = requests.get(url, params={"offset": LAST_UPDATE_ID, "timeout": 1}, timeout=5).json()
-        for up in res.get("result", []):
-            LAST_UPDATE_ID = up["update_id"] + 1
-            if str(up.get("message", {}).get("chat", {}).get("id")) != str(CHAT_ID): continue
-            text = up.get("message", {}).get("text", "").strip()
-            if text == "#status":
-                cap, slots = get_dynamic_config()
-                avail = get_available_capital()
-                conn = sqlite3.connect(DB_FILE)
-                open_tr = conn.execute("SELECT symbol FROM trades WHERE status='OPEN'").fetchall()
-                conn.close()
-                msg = f"STATUS: Brahmand Kavach v31.6\nCapital: {cap:,.0f}\nAvailable: {avail:,.0f}\nSlots: {slots}\nOpen: {len(open_tr)}"
-                send_telegram(msg)
-    except: pass
 
-# --- HEALTH SERVER ---
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self): 
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Live")
-    def log_message(self, format, *args): return
+        bot.send_message(
+            CHAT_ID,
+            msg,
+            parse_mode="Markdown"
+        )
 
-def market_open():
-    now = datetime.now(IST)
-    curr = now.hour * 60 + now.minute
-    return now.weekday() < 5 and 555 <= curr <= 930
+    except Exception as e:
+        print(f"TG ERROR: {e}")
 
-# --- MAIN ENGINE ---
-def run():
-    init_db()
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    send_telegram("SYSTEM START: Brahmand Kavach v31.6 is online.")
-    try: symbols = (pd.read_csv(NSE500_URL)["Symbol"] + ".NS").tolist()
-    except: symbols = []
-    while True:
+# ================= NIFTY 250 =================
+
+NIFTY_250_URL = "https://archives.nseindia.com/content/indices/ind_nifty250list.csv"
+
+def get_nifty250():
+
+    try:
+
+        df = pd.read_csv(NIFTY_250_URL)
+
+        symbols = [
+            s + ".NS"
+            for s in df["Symbol"].tolist()
+        ]
+
+        return list(set(symbols))
+
+    except Exception as e:
+
+        print(f"NIFTY250 ERROR: {e}")
+
+        return [
+            "RELIANCE.NS",
+            "TCS.NS",
+            "INFY.NS",
+            "HDFCBANK.NS",
+            "ICICIBANK.NS"
+        ]
+
+STOCKS = get_nifty250()
+
+# ================= SECTOR MAP =================
+
+SECTOR_MAP = {
+
+    'RELIANCE.NS': 'ENERGY',
+    'ONGC.NS': 'ENERGY',
+    'IOC.NS': 'ENERGY',
+    'BPCL.NS': 'ENERGY',
+
+    'TCS.NS': 'IT',
+    'INFY.NS': 'IT',
+    'WIPRO.NS': 'IT',
+    'HCLTECH.NS': 'IT',
+
+    'HDFCBANK.NS': 'BANK',
+    'ICICIBANK.NS': 'BANK',
+    'SBIN.NS': 'BANK',
+    'AXISBANK.NS': 'BANK',
+
+    'TATASTEEL.NS': 'METAL',
+    'JSWSTEEL.NS': 'METAL',
+    'HINDALCO.NS': 'METAL',
+
+    'SUNPHARMA.NS': 'PHARMA',
+    'CIPLA.NS': 'PHARMA',
+    'DIVISLAB.NS': 'PHARMA',
+
+    'LT.NS': 'INFRA',
+    'ULTRACEMCO.NS': 'INFRA',
+    'SIEMENS.NS': 'INFRA',
+
+    'MARUTI.NS': 'AUTO',
+    'TATAMOTORS.NS': 'AUTO',
+    'M&M.NS': 'AUTO'
+}
+
+# ================= MARKET TREND =================
+
+def market_trend():
+
+    try:
+
+        df = yf.download(
+            "^NSEI",
+            period="250d",
+            interval="1d",
+            progress=False
+        )
+
+        if len(df) < 200:
+            return True
+
+        df['EMA20'] = df['Close'].ewm(span=20).mean()
+        df['EMA50'] = df['Close'].ewm(span=50).mean()
+        df['EMA200'] = df['Close'].ewm(span=200).mean()
+
+        last = df.iloc[-1]
+
+        return (
+            last['EMA20'] >
+            last['EMA50'] >
+            last['EMA200']
+        )
+
+    except:
+        return True
+
+# ================= INDICATORS =================
+
+def calculate_indicators(df):
+
+    df = df.copy()
+
+    df['EMA20'] = df['Close'].ewm(span=20).mean()
+    df['EMA50'] = df['Close'].ewm(span=50).mean()
+
+    delta = df['Close'].diff()
+
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+
+    rs = gain / loss
+
+    df['RSI'] = 100 - (100 / (1 + rs))
+
+    adx = ADXIndicator(
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        window=14
+    )
+
+    df['ADX'] = adx.adx()
+
+    tr = pd.concat([
+        df['High'] - df['Low'],
+        abs(df['High'] - df['Close'].shift()),
+        abs(df['Low'] - df['Close'].shift())
+    ], axis=1).max(axis=1)
+
+    df['ATR'] = tr.rolling(14).mean()
+
+    return df.dropna()
+
+# ================= SCANNER =================
+
+def scan_and_trade():
+
+    global TRADING_HALTED
+    global SCAN_INDEX
+
+    if TRADING_HALTED:
+        return
+
+    if DAILY_PNL <= DAILY_LOSS_LIMIT:
+
+        TRADING_HALTED = True
+
+        send_msg(
+            f"🛑 *LOSS LIMIT HIT*\n"
+            f"Daily P&L: ₹{DAILY_PNL:.0f}\n"
+            f"Trading Halted"
+        )
+
+        return
+
+    if len(POSITIONS) >= MAX_POSITIONS:
+        return
+
+    if not market_trend():
+        return
+
+    available = [
+        s for s in STOCKS
+        if s not in POSITIONS
+    ]
+
+    if not available:
+        return
+
+    start = SCAN_INDEX
+    end = start + BATCH_SIZE
+
+    scan_list = available[start:end]
+
+    SCAN_INDEX = end
+
+    if SCAN_INDEX >= len(available):
+        SCAN_INDEX = 0
+
+    try:
+
+        data = yf.download(
+            scan_list,
+            period="90d",
+            interval="1d",
+            group_by='ticker',
+            progress=False,
+            threads=True
+        )
+
+    except Exception as e:
+
+        print(f"SCAN ERROR: {e}")
+        return
+
+    candidates = []
+
+    for symbol in scan_list:
+
         try:
-            check_telegram_commands()
-            manage_exits()
-            if market_open():
-                _, max_slots = get_dynamic_config()
-                conn = sqlite3.connect(DB_FILE)
-                current_open = conn.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()[0]
-                if current_open >= max_slots:
-                    conn.close()
+
+            df = data[symbol].copy()
+
+            df = calculate_indicators(df)
+
+            if len(df) < 50:
+                continue
+
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+
+            if last['ADX'] < ADX_THRESHOLD:
+                continue
+
+            if last['Close'] < last['EMA50']:
+                continue
+
+            if not (55 < last['RSI'] < 70):
+                continue
+
+            breakout = (
+                last['Close'] > prev['High']
+                and last['Close'] > last['EMA20']
+            )
+
+            if not breakout:
+                continue
+
+            sector = SECTOR_MAP.get(symbol, "OTHER")
+
+            sector_count = sum(
+                1 for s in POSITIONS
+                if SECTOR_MAP.get(s) == sector
+            )
+
+            if sector_count >= MAX_SECTOR_POSITIONS:
+                continue
+
+            avg_vol = df['Volume'].rolling(20).mean().iloc[-1]
+
+            score = 50
+
+            if last['Volume'] > avg_vol * 1.5:
+                score += 20
+
+            if last['RSI'] > 60:
+                score += 10
+
+            candidates.append((
+                symbol,
+                score,
+                last['Close'],
+                last['ATR']
+            ))
+
+        except Exception as e:
+            print(f"{symbol} ERROR: {e}")
+
+    candidates = sorted(
+        candidates,
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    for symbol, score, price, atr in candidates:
+
+        if len(POSITIONS) >= MAX_POSITIONS:
+            break
+
+        risk_amount = CAPITAL * RISK_PER_TRADE
+
+        sl_distance = atr * ATR_SL_MULTIPLIER
+
+        qty = int(risk_amount / sl_distance)
+
+        if qty <= 0:
+            continue
+
+        if price * qty > CAPITAL * 0.25:
+            continue
+
+        sl = price - sl_distance
+
+        target = (
+            price +
+            (atr * ATR_TARGET_MULTIPLIER)
+        )
+
+        POSITIONS[symbol] = {
+
+            "buy": float(price),
+            "qty": qty,
+            "sl": float(sl),
+            "target": float(target),
+            "time": datetime.now(IST).isoformat(),
+            "be_done": False,
+            "partial_done": False
+        }
+
+        safe_save()
+
+        send_msg(
+            f"🚀 *BUY SIGNAL*\n\n"
+            f"*{symbol.replace('.NS','')}*\n"
+            f"Price: ₹{price:.2f}\n"
+            f"Qty: {qty}\n"
+            f"SL: ₹{sl:.2f}\n"
+            f"Target: ₹{target:.2f}\n"
+            f"Score: {score}"
+        )
+
+# ================= MONITOR =================
+
+def monitor_positions():
+
+    global DAILY_PNL
+    global WINS
+    global LOSSES
+
+    if not POSITIONS:
+        return
+
+    try:
+
+        data = yf.download(
+            list(POSITIONS.keys()),
+            period="1d",
+            interval="1m",
+            group_by='ticker',
+            progress=False,
+            threads=True
+        )
+
+    except Exception as e:
+        print(f"MONITOR ERROR: {e}")
+        return
+
+    remove = []
+
+    for symbol, pos in POSITIONS.items():
+
+        try:
+
+            df = data[symbol]
+
+            curr = df['Close'].iloc[-1]
+
+            # ===== PARTIAL =====
+
+            if (
+                curr >= pos['buy'] * (1 + PARTIAL_BOOK_TRIGGER)
+                and not pos['partial_done']
+            ):
+
+                partial_qty = int(
+                    pos['qty'] * PARTIAL_BOOK_QTY
+                )
+
+                pnl = (
+                    (curr - pos['buy']) *
+                    partial_qty
+                )
+
+                DAILY_PNL += pnl
+
+                pos['qty'] -= partial_qty
+
+                pos['partial_done'] = True
+
+                send_msg(
+                    f"💰 *PARTIAL EXIT*\n"
+                    f"{symbol.replace('.NS','')}\n"
+                    f"P&L: ₹{pnl:.0f}"
+                )
+
+            # ===== BREAK EVEN =====
+
+            if (
+                curr >= pos['buy'] * (1 + BREAK_EVEN_TRIGGER)
+                and not pos['be_done']
+            ):
+
+                pos['sl'] = pos['buy']
+
+                pos['be_done'] = True
+
+                send_msg(
+                    f"🛡️ *BREAK EVEN*\n"
+                    f"{symbol.replace('.NS','')}"
+                )
+
+            # ===== TRAILING =====
+
+            if curr >= pos['buy'] * 1.03:
+
+                new_sl = curr * 0.98
+
+                if new_sl > pos['sl']:
+                    pos['sl'] = new_sl
+
+            # ===== AUTO EXIT =====
+
+            entry_time = datetime.fromisoformat(
+                pos['time']
+            )
+
+            if (
+                datetime.now(IST) - entry_time
+            ).days >= AUTO_EXIT_DAYS:
+
+                pnl = (
+                    (curr - pos['buy']) *
+                    pos['qty']
+                )
+
+                DAILY_PNL += pnl
+
+                if pnl >= 0:
+                    WINS += 1
                 else:
-                    conn.close()
-                    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                        futures = {executor.submit(analyze_stock, s): s for s in symbols}
-                        for f in as_completed(futures):
-                            conn = sqlite3.connect(DB_FILE)
-                            now_open = conn.execute("SELECT COUNT(*) FROM trades WHERE status='OPEN'").fetchone()[0]
-                            if now_open >= max_slots:
-                                conn.close()
-                                executor.shutdown(wait=False, cancel_futures=True)
-                                break
-                            conn.close()
-                            res = f.result()
-                            if res:
-                                conn = sqlite3.connect(DB_FILE)
-                                try:
-                                    conn.execute("INSERT INTO trades (symbol, entry, sl, target, qty, status, highest_price, entry_time) VALUES (?,?,?,?,?,?,?,?)", (res['symbol'], res['price'], res['sl'], res['target'], res['qty'], "OPEN", res['price'], datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")))
-                                    conn.commit()
-                                    send_telegram(f"BUY: {res['symbol']} | Price: {res['price']} | Qty: {res['qty']}")
-                                except: pass
-                                finally: conn.close()
-            time.sleep(SCAN_INTERVAL)
-        except Exception as e: 
-            logging.error(f"Error: {e}")
-            time.sleep(30)
+                    LOSSES += 1
+
+                send_msg(
+                    f"⏰ *AUTO EXIT*\n"
+                    f"{symbol.replace('.NS','')}\n"
+                    f"P&L: ₹{pnl:.0f}"
+                )
+
+                remove.append(symbol)
+
+                continue
+
+            # ===== TARGET =====
+
+            if curr >= pos['target']:
+
+                pnl = (
+                    (curr - pos['buy']) *
+                    pos['qty']
+                )
+
+                DAILY_PNL += pnl
+
+                WINS += 1
+
+                send_msg(
+                    f"🎯 *TARGET HIT*\n"
+                    f"{symbol.replace('.NS','')}\n"
+                    f"P&L: ₹{pnl:.0f}"
+                )
+
+                remove.append(symbol)
+
+            # ===== STOP LOSS =====
+
+            elif curr <= pos['sl']:
+
+                pnl = (
+                    (curr - pos['buy']) *
+                    pos['qty']
+                )
+
+                DAILY_PNL += pnl
+
+                LOSSES += 1
+
+                send_msg(
+                    f"🛑 *STOP LOSS*\n"
+                    f"{symbol.replace('.NS','')}\n"
+                    f"P&L: ₹{pnl:.0f}"
+                )
+
+                remove.append(symbol)
+
+        except Exception as e:
+            print(f"{symbol} MONITOR ERROR: {e}")
+
+    for s in remove:
+
+        if s in POSITIONS:
+            del POSITIONS[s]
+
+    safe_save()
+
+# ================= TELEGRAM COMMANDS =================
+
+@bot.message_handler(commands=['start', 'status'])
+
+def status(message):
+
+    total = WINS + LOSSES
+
+    winrate = (
+        (WINS / total) * 100
+        if total > 0 else 0
+    )
+
+    msg = (
+        f"🚩 *V43.5 BRAHMASTRA PRO*\n\n"
+        f"💰 Daily P&L: ₹{DAILY_PNL:.0f}\n"
+        f"📈 Positions: {len(POSITIONS)}/{MAX_POSITIONS}\n"
+        f"✅ Wins: {WINS}\n"
+        f"❌ Losses: {LOSSES}\n"
+        f"🎯 WinRate: {winrate:.1f}%\n\n"
+    )
+
+    if POSITIONS:
+
+        for s, p in POSITIONS.items():
+
+            msg += (
+                f"• {s.replace('.NS','')}\n"
+                f"Buy: ₹{p['buy']:.2f}\n"
+                f"SL: ₹{p['sl']:.2f}\n"
+                f"Qty: {p['qty']}\n\n"
+            )
+
+    else:
+        msg += "No Active Positions"
+
+    bot.reply_to(
+        message,
+        msg,
+        parse_mode="Markdown"
+    )
+
+# ================= MAIN LOOP =================
+
+def main_loop():
+
+    global LAST_SCAN
+    global LAST_MONITOR
+    global MORNING_SENT
+    global EVENING_SENT
+    global DAILY_PNL
+    global TRADING_HALTED
+    global WINS
+    global LOSSES
+
+    while True:
+
+        try:
+
+            now = datetime.now(IST)
+
+            current_time = now.strftime("%H:%M")
+
+            # ===== MORNING MESSAGE =====
+
+            if (
+                current_time == "09:20"
+                and not MORNING_SENT
+                and now.weekday() < 5
+            ):
+
+                send_msg(
+                    "🚩 *जय श्री राम* 🚩\n"
+                    "V43.5 BRAHMASTRA ACTIVE ✅\n"
+                    "⚡ 5-Minute Rotational Scanner ON"
+                )
+
+                MORNING_SENT = True
+                EVENING_SENT = False
+
+            # ===== MARKET HOURS =====
+
+            if (
+                now.weekday() < 5
+                and "09:20" <= current_time <= "15:20"
+            ):
+
+                # ===== 5 MINUTE SCANNER =====
+
+                if (
+                    now.minute % 5 == 0
+                    and LAST_SCAN != current_time
+                ):
+
+                    LAST_SCAN = current_time
+
+                    scan_and_trade()
+
+                # ===== MONITOR =====
+
+                if (
+                    time.time() - LAST_MONITOR
+                ) > MONITOR_INTERVAL:
+
+                    LAST_MONITOR = time.time()
+
+                    monitor_positions()
+
+            # ===== EVENING REPORT =====
+
+            if (
+                current_time == "15:30"
+                and not EVENING_SENT
+                and now.weekday() < 5
+            ):
+
+                total = WINS + LOSSES
+
+                winrate = (
+                    (WINS / total) * 100
+                    if total > 0 else 0
+                )
+
+                msg = (
+                    f"📊 *DAILY REPORT*\n\n"
+                    f"💰 P&L: ₹{DAILY_PNL:.0f}\n"
+                    f"✅ Wins: {WINS}\n"
+                    f"❌ Losses: {LOSSES}\n"
+                    f"🎯 WinRate: {winrate:.1f}%\n"
+                    f"📈 Open Positions: {len(POSITIONS)}"
+                )
+
+                send_msg(msg)
+
+                DAILY_PNL = 0
+                WINS = 0
+                LOSSES = 0
+
+                TRADING_HALTED = False
+
+                safe_save()
+
+                EVENING_SENT = True
+                MORNING_SENT = False
+
+            time.sleep(5)
+
+        except Exception as e:
+
+            print(f"MAIN LOOP ERROR: {e}")
+
+            time.sleep(10)
+
+# ================= START =================
 
 if __name__ == "__main__":
-    run()
 
+    Thread(
+        target=lambda: app.run(
+            host="0.0.0.0",
+            port=10000
+        ),
+        daemon=True
+    ).start()
+
+    send_msg(
+        "🚀 *V43.5 BRAHMASTRA PRO STARTED* 🚀\n"
+        "⚡ 5-Minute Rotational Scanner ACTIVE"
+    )
+
+    Thread(
+        target=main_loop,
+        daemon=True
+    ).start()
+
+    while True:
+
+        try:
+
+            bot.infinity_polling(
+                timeout=60,
+                long_polling_timeout=60
+            )
+
+        except Exception as e:
+
+            print(f"POLL ERROR: {e}")
+
+            time.sleep(15)
