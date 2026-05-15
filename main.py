@@ -1,4 +1,4 @@
-# 🚩 JAI SHREE RAM - V44 BRAHMASTRA AI PRO INDIA FINAL 🚩
+# 🚩🚩 JAI SHREE RAM - V44 BRAHMASTRA AI PRO FINAL 🚩🚩
 
 import os
 import time
@@ -14,9 +14,7 @@ from threading import Thread
 from datetime import datetime, time as dtime
 from ta.trend import ADXIndicator
 
-# =========================================================
-# CONFIG
-# =========================================================
+# ================= CONFIG =================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -27,24 +25,11 @@ IST = pytz.timezone("Asia/Kolkata")
 
 DATA_FILE = "v44_state.json"
 
-# =========================================================
-# CAPITAL SETTINGS
-# =========================================================
-
 CAPITAL = 100000
-
 RISK_PER_TRADE = 0.01
-
 MAX_POSITIONS = 4
 MAX_SECTOR_POSITIONS = 2
-
-MAX_CAPITAL_PER_TRADE = 0.20
-
 DAILY_LOSS_LIMIT = -1500
-
-# =========================================================
-# STRATEGY SETTINGS
-# =========================================================
 
 ATR_SL_MULTIPLIER = 1.5
 ATR_TARGET_MULTIPLIER = 4.0
@@ -58,28 +43,18 @@ AUTO_EXIT_DAYS = 3
 ADX_THRESHOLD = 25
 
 SCAN_INTERVAL = 300
-MONITOR_INTERVAL = 120
+MONITOR_INTERVAL = 60
 
 BATCH_SIZE = 50
 
-# =========================================================
-# INDIA MARKET FILTERS
-# =========================================================
-
-VIX_LIMIT = 20
-
-# =========================================================
-# LOGGING
-# =========================================================
+# ================= LOGGING =================
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# =========================================================
-# FLASK
-# =========================================================
+# ================= FLASK =================
 
 app = Flask(__name__)
 
@@ -87,14 +62,10 @@ app = Flask(__name__)
 def home():
     return "🚩 V44 BRAHMASTRA AI PRO LIVE 🚩"
 
-# =========================================================
-# STORAGE
-# =========================================================
+# ================= STORAGE =================
 
 def safe_save():
-
     try:
-
         data = {
             "positions": POSITIONS,
             "daily_pnl": DAILY_PNL,
@@ -103,15 +74,14 @@ def safe_save():
             "date": str(datetime.now(IST).date())
         }
 
-        temp_file = DATA_FILE + ".tmp"
+        temp = DATA_FILE + ".tmp"
 
-        with open(temp_file, "w") as f:
+        with open(temp, "w") as f:
             json.dump(data, f)
 
-        os.replace(temp_file, DATA_FILE)
+        os.replace(temp, DATA_FILE)
 
     except Exception as e:
-
         logging.error(f"SAVE ERROR: {e}")
 
 def load_data():
@@ -119,13 +89,10 @@ def load_data():
     if os.path.exists(DATA_FILE):
 
         try:
-
             with open(DATA_FILE, "r") as f:
                 data = json.load(f)
 
             if data.get("date") == str(datetime.now(IST).date()):
-
-                logging.info("Previous State Loaded")
 
                 return (
                     data.get("positions", {}),
@@ -135,7 +102,6 @@ def load_data():
                 )
 
         except Exception as e:
-
             logging.error(f"LOAD ERROR: {e}")
 
     return {}, 0, 0, 0
@@ -145,58 +111,20 @@ POSITIONS, DAILY_PNL, WINS, LOSSES = load_data()
 TRADING_HALTED = False
 SCAN_INDEX = 0
 
-# =========================================================
-# TELEGRAM
-# =========================================================
+MORNING_SENT = False
+EVENING_SENT = False
+
+# ================= TELEGRAM =================
 
 def send_msg(msg):
 
     try:
-
-        bot.send_message(
-            CHAT_ID,
-            msg,
-            parse_mode="HTML"
-        )
+        bot.send_message(CHAT_ID, msg, parse_mode="HTML")
 
     except Exception as e:
+        logging.error(f"TELEGRAM ERROR: {e}")
 
-        logging.error(f"TG ERROR: {e}")
-
-# =========================================================
-# NIFTY 250
-# =========================================================
-
-def get_nifty250():
-
-    try:
-
-        df = pd.read_csv(
-            "https://archives.nseindia.com/content/indices/ind_nifty250list.csv"
-        )
-
-        return [
-            s + ".NS"
-            for s in df["Symbol"].tolist()
-        ]
-
-    except Exception as e:
-
-        logging.error(f"NIFTY250 ERROR: {e}")
-
-        return [
-            "RELIANCE.NS",
-            "TCS.NS",
-            "INFY.NS",
-            "SBIN.NS",
-            "TATAMOTORS.NS"
-        ]
-
-STOCKS = get_nifty250()
-
-# =========================================================
-# SECTOR MAP
-# =========================================================
+# ================= STOCKS =================
 
 SECTOR_MAP = {
 
@@ -215,43 +143,15 @@ SECTOR_MAP = {
     "MARUTI.NS": "AUTO",
 
     "SUNPHARMA.NS": "PHARMA",
+    "DRREDDY.NS": "PHARMA",
 
-    "LT.NS": "INFRA"
+    "LT.NS": "INFRA",
+    "ADANIPORTS.NS": "INFRA"
 }
 
-# =========================================================
-# INDIA VIX FILTER
-# =========================================================
+STOCKS = list(SECTOR_MAP.keys())
 
-def check_vix():
-
-    try:
-
-        vix = yf.download(
-            "^INDIAVIX",
-            period="5d",
-            interval="1d",
-            progress=False
-        )
-
-        if vix.empty:
-            return True
-
-        current_vix = float(vix['Close'].iloc[-1])
-
-        logging.info(f"INDIA VIX: {current_vix}")
-
-        return current_vix < VIX_LIMIT
-
-    except Exception as e:
-
-        logging.error(f"VIX ERROR: {e}")
-
-        return True
-
-# =========================================================
-# MARKET TREND
-# =========================================================
+# ================= MARKET TREND =================
 
 def market_trend():
 
@@ -259,23 +159,44 @@ def market_trend():
 
         df = yf.download(
             "^NSEI",
-            period="200d",
+            period="100d",
             interval="1d",
-            progress=False
+            progress=False,
+            threads=False
         )
 
-        if len(df) < 50:
+        if df.empty or len(df) < 50:
             return True
 
         df['EMA50'] = df['Close'].ewm(span=50).mean()
 
-        bullish = (
-            df['Close'].iloc[-1]
-            >
-            df['EMA50'].iloc[-1]
-        )
+        close = float(df['Close'].iloc[-1])
+        ema50 = float(df['EMA50'].iloc[-1])
 
-        return bullish
+        # INDIA VIX FILTER
+
+        try:
+
+            vix = yf.download(
+                "^INDIAVIX",
+                period="5d",
+                interval="1d",
+                progress=False,
+                threads=False
+            )
+
+            if not vix.empty:
+
+                vix_now = float(vix['Close'].iloc[-1])
+
+                if vix_now > 22:
+                    logging.info("India VIX HIGH")
+                    return False
+
+        except:
+            pass
+
+        return close > ema50
 
     except Exception as e:
 
@@ -283,9 +204,7 @@ def market_trend():
 
         return True
 
-# =========================================================
-# INDICATORS
-# =========================================================
+# ================= INDICATORS =================
 
 def calculate_indicators(df):
 
@@ -322,9 +241,7 @@ def calculate_indicators(df):
 
     return df.dropna()
 
-# =========================================================
-# SCANNER
-# =========================================================
+# ================= SCANNER =================
 
 def scan_and_trade():
 
@@ -332,10 +249,6 @@ def scan_and_trade():
     global TRADING_HALTED
 
     try:
-
-        # =========================
-        # RISK STOP
-        # =========================
 
         if TRADING_HALTED:
             return
@@ -345,47 +258,22 @@ def scan_and_trade():
             TRADING_HALTED = True
 
             send_msg(
-                f"🛑 <b>DAILY LOSS LIMIT HIT</b>\n"
-                f"P&L: ₹{DAILY_PNL:.0f}"
+                f"🛑 <b>LOSS LIMIT HIT</b>\n"
+                f"Daily P&L: ₹{DAILY_PNL:.0f}"
             )
 
             return
 
-        # =========================
-        # POSITION LIMIT
-        # =========================
-
         if len(POSITIONS) >= MAX_POSITIONS:
             return
 
-        # =========================
-        # MARKET FILTER
-        # =========================
-
         if not market_trend():
 
-            logging.info("Market Weak")
+            logging.info("MARKET WEAK")
 
             return
 
-        # =========================
-        # VIX FILTER
-        # =========================
-
-        if not check_vix():
-
-            logging.info("High VIX - No Trade")
-
-            return
-
-        # =========================
-        # ROTATIONAL SCAN
-        # =========================
-
-        available = [
-            s for s in STOCKS
-            if s not in POSITIONS
-        ]
+        available = [s for s in STOCKS if s not in POSITIONS]
 
         if not available:
             return
@@ -395,12 +283,9 @@ def scan_and_trade():
 
         scan_list = available[start:end]
 
-        SCAN_INDEX = (
-            0 if end >= len(available)
-            else end
-        )
+        SCAN_INDEX = 0 if end >= len(available) else end
 
-        logging.info(f"Scanning {len(scan_list)} Stocks")
+        logging.info(f"Scanning {len(scan_list)} stocks")
 
         data = yf.download(
             scan_list,
@@ -413,21 +298,13 @@ def scan_and_trade():
 
         candidates = []
 
-        # =========================
-        # STOCK ANALYSIS
-        # =========================
-
         for symbol in scan_list:
 
             try:
 
-                df = (
-                    data[symbol].copy()
-                    if isinstance(data.columns, pd.MultiIndex)
-                    else data.copy()
-                )
+                df = data[symbol].copy() if isinstance(data.columns, pd.MultiIndex) else data.copy()
 
-                if df.empty:
+                if df.empty or len(df) < 50:
                     continue
 
                 df = calculate_indicators(df)
@@ -438,36 +315,45 @@ def scan_and_trade():
                 last = df.iloc[-1]
                 prev = df.iloc[-2]
 
-                # =========================
-                # CONDITIONS
-                # =========================
+                # ===== FIXED VALUES =====
 
-                if last['ADX'] < ADX_THRESHOLD:
+                adx = float(last['ADX'])
+                rsi = float(last['RSI'])
+                close = float(last['Close'])
+
+                ema20 = float(last['EMA20'])
+                ema50 = float(last['EMA50'])
+
+                prev_high = float(prev['High'])
+
+                atr = float(last['ATR'])
+
+                volume = float(last['Volume'])
+
+                avg_vol = float(
+                    df['Volume'].rolling(20).mean().iloc[-1]
+                )
+
+                # ===== CONDITIONS =====
+
+                if adx < ADX_THRESHOLD:
                     continue
 
-                if not (55 < last['RSI'] < 70):
+                if not (55 < rsi < 70):
                     continue
 
-                if last['Close'] < last['EMA50']:
+                if close < ema50:
                     continue
 
                 breakout = (
-                    last['Close'] > prev['High']
-                    and
-                    last['Close'] > last['EMA20']
+                    close > prev_high and
+                    close > ema20
                 )
 
                 if not breakout:
                     continue
 
-                # =========================
-                # SECTOR CONTROL
-                # =========================
-
-                sector = SECTOR_MAP.get(
-                    symbol,
-                    "OTHER"
-                )
+                sector = SECTOR_MAP.get(symbol, "OTHER")
 
                 sector_count = sum(
                     1 for s in POSITIONS
@@ -477,51 +363,26 @@ def scan_and_trade():
                 if sector_count >= MAX_SECTOR_POSITIONS:
                     continue
 
-                # =========================
-                # AI SCORE
-                # =========================
-
                 score = 50
 
-                avg_vol = (
-                    df['Volume']
-                    .rolling(20)
-                    .mean()
-                    .iloc[-1]
-                )
-
-                if last['Volume'] > avg_vol * 1.5:
+                if volume > avg_vol * 1.5:
                     score += 20
 
-                if last['RSI'] > 60:
+                if rsi > 60:
                     score += 10
 
-                if last['ADX'] > 30:
-                    score += 10
-
-                candidates.append((
-                    symbol,
-                    score,
-                    last['Close'],
-                    last['ATR']
-                ))
+                candidates.append(
+                    (symbol, score, close, atr)
+                )
 
             except Exception as e:
 
                 logging.error(f"{symbol} ERROR: {e}")
 
-        # =========================
-        # BEST STOCKS
-        # =========================
-
         candidates.sort(
             key=lambda x: x[1],
             reverse=True
         )
-
-        # =========================
-        # BUY
-        # =========================
 
         for symbol, score, price, atr in candidates:
 
@@ -535,48 +396,56 @@ def scan_and_trade():
             if sl_distance <= 0:
                 continue
 
-            qty = int(
-                risk_amount / sl_distance
-            )
+            qty = int(risk_amount / sl_distance)
 
             if qty <= 0:
                 continue
 
-            capital_used = price * qty
+            # 20% CAPITAL LIMIT
 
-            if capital_used > CAPITAL * MAX_CAPITAL_PER_TRADE:
+            if price * qty > CAPITAL * 0.20:
                 continue
 
             sl = price - sl_distance
 
-            target = (
-                price +
-                (atr * ATR_TARGET_MULTIPLIER)
+            target = price + (
+                atr * ATR_TARGET_MULTIPLIER
             )
 
             POSITIONS[symbol] = {
 
                 "buy": float(price),
+
                 "qty": qty,
+
                 "sl": float(sl),
+
                 "target": float(target),
 
                 "time": datetime.now(IST).isoformat(),
 
                 "be_done": False,
+
                 "partial_done": False
             }
 
             safe_save()
 
             send_msg(
+
                 f"🚀 <b>BUY SIGNAL</b>\n\n"
-                f"<b>{symbol}</b>\n"
+
+                f"<b>{symbol.replace('.NS','')}</b>\n"
+
                 f"Price: ₹{price:.2f}\n"
+
                 f"Qty: {qty}\n"
+
                 f"SL: ₹{sl:.2f}\n"
+
                 f"Target: ₹{target:.2f}\n"
-                f"AI Score: {score}"
+
+                f"Score: {score}"
             )
 
             logging.info(f"BUY: {symbol}")
@@ -585,9 +454,7 @@ def scan_and_trade():
 
         logging.error(f"SCAN ERROR: {e}")
 
-# =========================================================
-# POSITION MONITOR
-# =========================================================
+# ================= MONITOR =================
 
 def monitor_positions():
 
@@ -615,20 +482,14 @@ def monitor_positions():
 
             try:
 
-                df = (
-                    data[symbol]
-                    if isinstance(data.columns, pd.MultiIndex)
-                    else data
-                )
+                df = data[symbol] if isinstance(data.columns, pd.MultiIndex) else data
 
                 if df.empty:
                     continue
 
-                curr = df['Close'].iloc[-1]
+                curr = float(df['Close'].iloc[-1])
 
-                # =========================
                 # PARTIAL EXIT
-                # =========================
 
                 if (
                     curr >= pos['buy'] * (1 + PARTIAL_BOOK_TRIGGER)
@@ -640,9 +501,8 @@ def monitor_positions():
                     )
 
                     pnl = (
-                        (curr - pos['buy'])
-                        * partial_qty
-                    )
+                        curr - pos['buy']
+                    ) * partial_qty
 
                     DAILY_PNL += pnl
 
@@ -656,9 +516,7 @@ def monitor_positions():
                         f"P&L: ₹{pnl:.0f}"
                     )
 
-                # =========================
                 # BREAK EVEN
-                # =========================
 
                 if (
                     curr >= pos['buy'] * (1 + BREAK_EVEN_TRIGGER)
@@ -674,21 +532,16 @@ def monitor_positions():
                         f"{symbol}"
                     )
 
-                # =========================
                 # TRAILING SL
-                # =========================
 
                 if curr >= pos['buy'] * 1.03:
 
                     new_sl = curr * 0.98
 
                     if new_sl > pos['sl']:
-
                         pos['sl'] = new_sl
 
-                # =========================
                 # AUTO EXIT
-                # =========================
 
                 entry_time = datetime.fromisoformat(
                     pos['time']
@@ -699,9 +552,8 @@ def monitor_positions():
                 ).days >= AUTO_EXIT_DAYS:
 
                     pnl = (
-                        (curr - pos['buy'])
-                        * pos['qty']
-                    )
+                        curr - pos['buy']
+                    ) * pos['qty']
 
                     DAILY_PNL += pnl
 
@@ -720,16 +572,13 @@ def monitor_positions():
 
                     continue
 
-                # =========================
                 # TARGET
-                # =========================
 
                 if curr >= pos['target']:
 
                     pnl = (
-                        (curr - pos['buy'])
-                        * pos['qty']
-                    )
+                        curr - pos['buy']
+                    ) * pos['qty']
 
                     DAILY_PNL += pnl
 
@@ -743,16 +592,13 @@ def monitor_positions():
 
                     remove.append(symbol)
 
-                # =========================
                 # STOPLOSS
-                # =========================
 
                 elif curr <= pos['sl']:
 
                     pnl = (
-                        (curr - pos['buy'])
-                        * pos['qty']
-                    )
+                        curr - pos['buy']
+                    ) * pos['qty']
 
                     DAILY_PNL += pnl
 
@@ -770,10 +616,6 @@ def monitor_positions():
 
                 logging.error(f"{symbol} MONITOR ERROR: {e}")
 
-        # =========================
-        # REMOVE CLOSED
-        # =========================
-
         for s in remove:
 
             if s in POSITIONS:
@@ -785,9 +627,7 @@ def monitor_positions():
 
         logging.error(f"MONITOR ERROR: {e}")
 
-# =========================================================
-# TELEGRAM STATUS
-# =========================================================
+# ================= STATUS =================
 
 @bot.message_handler(commands=['start', 'status'])
 
@@ -801,11 +641,17 @@ def status(message):
     )
 
     msg = (
+
         f"🚩 <b>V44 BRAHMASTRA AI PRO</b>\n\n"
+
         f"💰 Daily P&L: ₹{DAILY_PNL:.0f}\n"
+
         f"📈 Positions: {len(POSITIONS)}/{MAX_POSITIONS}\n"
+
         f"✅ Wins: {WINS}\n"
+
         f"❌ Losses: {LOSSES}\n"
+
         f"🎯 WinRate: {winrate:.1f}%\n\n"
     )
 
@@ -824,19 +670,16 @@ def status(message):
 
         msg += "No Active Positions"
 
-    bot.reply_to(
-        message,
-        msg,
-        parse_mode="HTML"
-    )
+    bot.reply_to(message, msg, parse_mode="HTML")
 
-# =========================================================
-# MAIN LOOP
-# =========================================================
+# ================= MAIN LOOP =================
 
 def main_loop():
 
-    logging.info("BRAHMASTRA Started")
+    global MORNING_SENT
+    global EVENING_SENT
+
+    logging.info("BOT STARTED")
 
     while True:
 
@@ -844,15 +687,40 @@ def main_loop():
 
             now = datetime.now(IST)
 
+            t = now.strftime("%H:%M")
+
+            # ===== MORNING MESSAGE =====
+
             if (
-                now.weekday() < 5
-                and
-                dtime(9,20) <= now.time() <= dtime(15,30)
+                t == "09:20"
+                and not MORNING_SENT
+                and now.weekday() < 5
             ):
 
-                # =========================
-                # 5 MINUTE SCAN
-                # =========================
+                send_msg(
+
+                    "🚩 <b>जय श्री राम</b> 🚩\n\n"
+
+                    "V44 BRAHMASTRA AI PRO ACTIVE\n\n"
+
+                    "✅ AI Scanner Active\n"
+                    "✅ India VIX Filter\n"
+                    "✅ Market Trend Filter\n"
+                    "✅ Breakout Detection\n"
+                    "✅ Risk Management Active\n\n"
+
+                    "शुभ ट्रेडिंग 📈"
+                )
+
+                MORNING_SENT = True
+                EVENING_SENT = False
+
+            # ===== MARKET HOURS =====
+
+            if (
+                now.weekday() < 5
+                and dtime(9,20) <= now.time() <= dtime(15,30)
+            ):
 
                 if (
                     now.minute % 5 == 0
@@ -860,10 +728,6 @@ def main_loop():
                 ):
 
                     scan_and_trade()
-
-                # =========================
-                # POSITION MONITOR
-                # =========================
 
                 monitor_positions()
 
@@ -873,15 +737,39 @@ def main_loop():
 
                 time.sleep(60)
 
+            # ===== EVENING REPORT =====
+
+            if (
+                t == "15:30"
+                and not EVENING_SENT
+                and now.weekday() < 5
+            ):
+
+                send_msg(
+
+                    f"📊 <b>DAILY REPORT</b>\n\n"
+
+                    f"💰 P&L: ₹{DAILY_PNL:.0f}\n"
+
+                    f"✅ Wins: {WINS}\n"
+
+                    f"❌ Losses: {LOSSES}\n"
+
+                    f"📈 Open Positions: {len(POSITIONS)}\n\n"
+
+                    f"🚩 जय श्री राम 🚩"
+                )
+
+                EVENING_SENT = True
+                MORNING_SENT = False
+
         except Exception as e:
 
             logging.error(f"MAIN LOOP ERROR: {e}")
 
             time.sleep(15)
 
-# =========================================================
-# START
-# =========================================================
+# ================= START =================
 
 if __name__ == "__main__":
 
@@ -895,9 +783,9 @@ if __name__ == "__main__":
 
     send_msg(
         "🚀 <b>V44 BRAHMASTRA AI PRO STARTED</b>\n"
-        "🇮🇳 India Market AI Scanner ACTIVE\n"
-        "⚡ VIX Protection ENABLED\n"
-        "⚡ Smart Risk Management ENABLED"
+        "✅ Scanner Active\n"
+        "✅ AI Filters Active\n"
+        "✅ India VIX Active"
     )
 
     Thread(
