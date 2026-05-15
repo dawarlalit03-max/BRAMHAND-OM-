@@ -5,4 +5,4 @@ ta
 pytz
 pyTelegramBotAPI
 flask
-
+gunicorn
