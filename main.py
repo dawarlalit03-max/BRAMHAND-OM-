@@ -1,4 +1,4 @@
-# 🚩🚩 JAI SHREE RAM - V45 BRAHMASTRA NSE250 MASTER EDITION 🚩🚩
+# 🚩🚩 JAI SHREE RAM - V45 BRAHMASTRA NSE250 MASTER EDITION (NO DAILY RESET) 🚩🚩
 
 import os
 import time
@@ -45,7 +45,7 @@ AUTO_EXIT_DAYS = 3
 ADX_THRESHOLD = 25
 BATCH_SIZE = 15 
 
-# ⭐ ललित जी स्पेशल: 2026 की मुख्य NSE छुट्टियां (Format: YYYY-MM-DD)
+# ⭐ 2026 की मुख्य NSE छुट्टियां (Format: YYYY-MM-DD)
 NSE_HOLIDAYS = [
     "2026-01-26", "2026-03-02", "2026-04-02", "2026-04-03", 
     "2026-04-14", "2026-05-01", "2026-10-02", "2026-10-22", 
@@ -70,7 +70,7 @@ def home():
 # ================= SAFE DOWNLOAD (ANTIBAN SHIELD) =================
 
 def safe_download(*args, **kwargs):
-    """ललित जी स्पेशल: याहू क्रैश प्रोटेक्शन और एंटी-बैन स्पीड ब्रेकर"""
+    """याहू क्रैश प्रोटेक्शन और एंटी-बैन स्पीड ब्रेकर"""
     try:
         time.sleep(1.5) # याहू को ब्लॉक करने से रोकने के लिए 1.5 सेकंड का आराम
         return yf.download(*args, **kwargs)
@@ -82,7 +82,7 @@ def safe_download(*args, **kwargs):
 
 def init_db():
     try:
-        # ⭐ ललित जी स्पेशल: timeout=30 और check_same_thread=False लॉक एरर से बचाएगा
+        # timeout=30 और check_same_thread=False लॉक एरर से बचाएगा
         conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
         cursor = conn.cursor()
         
@@ -138,8 +138,16 @@ def load_sqlite_state():
         if state:
             daily_pnl, wins, losses = state[0], state[1], state[2]
         else:
+            # अगर आज की तारीख की रो (row) नहीं है, तो पिछले रिकॉर्ड को जारी रखने के लिए डेटाबेस में एंट्री बनाएँ
+            # लेकिन ग्लोबल वेरिएबल्स को पुराना ही रहने देंगे ताकि लगातार हिसाब चले
             cursor.execute("INSERT OR IGNORE INTO daily_state (date, daily_pnl, wins, losses) VALUES (?, 0, 0, 0)", (today_str,))
             conn.commit()
+            
+            # पिछली आखिरी एंट्री से वैल्यू उठाने की कोशिश करें
+            cursor.execute("SELECT daily_pnl, wins, losses FROM daily_state ORDER BY date DESC LIMIT 1 OFFSET 1")
+            last_state = cursor.fetchone()
+            if last_state:
+                daily_pnl, wins, losses = last_state[0], last_state[1], last_state[2]
             
         conn.close()
     except Exception as e:
@@ -155,7 +163,6 @@ MORNING_SENT = False
 EVENING_SENT = False
 CACHED_TREND = True
 LAST_TREND_CHECK = None
-LAST_RESET_DATE = str(datetime.now(IST).date())
 
 def update_sqlite_position(symbol, pos_data, delete=False):
     try:
@@ -180,36 +187,13 @@ def save_sqlite_daily_state():
         conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('''
-            UPDATE daily_state SET daily_pnl = ?, wins = ?, losses = ? WHERE date = ?
-        ''', (DAILY_PNL, WINS, LOSSES, today_str))
+            INSERT OR REPLACE INTO daily_state (date, daily_pnl, wins, losses) 
+            VALUES (?, ?, ?, ?)
+        ''', (today_str, DAILY_PNL, WINS, LOSSES))
         conn.commit()
         conn.close()
     except Exception as e:
         logging.error(f"DB DAILY STATE UPDATE ERROR: {e}")
-
-# ⭐ ललित जी स्पेशल: ऑटोमैटिक नया ट्रेडिंग दिन रीसेट लॉजिक
-def reset_daily_state():
-    global DAILY_PNL, WINS, LOSSES, TRADING_HALTED, LAST_RESET_DATE
-
-    today = str(datetime.now(IST).date())
-
-    if today != LAST_RESET_DATE:
-        DAILY_PNL = 0
-        WINS = 0
-        LOSSES = 0
-        TRADING_HALTED = False
-        LAST_RESET_DATE = today
-        
-        try:
-            conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
-            cursor = conn.cursor()
-            cursor.execute('INSERT OR IGNORE INTO daily_state (date, daily_pnl, wins, losses) VALUES (?, 0, 0, 0)', (today,))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            logging.error(f"SQLITE DAILY RESET ERROR: {e}")
-
-        send_msg("🌅 नया ट्रेडिंग दिन शुरू: पुराना हिसाब रीसेट कर दिया गया है।")
 
 # ================= TELEGRAM SEND FUNCTION =================
 
@@ -256,7 +240,6 @@ def market_trend():
         return CACHED_TREND
         
     try:
-        # yf.download की जगह safe_download इस्तेमाल किया
         nifty = safe_download("^NSEI", period="100d", interval="1d", progress=False, threads=False)
         if nifty.empty or len(nifty) < 50:
             LAST_TREND_CHECK = now
@@ -305,7 +288,7 @@ def scan_and_trade():
         if TRADING_HALTED: return
         if DAILY_PNL <= DAILY_LOSS_LIMIT:
             TRADING_HALTED = True
-            send_msg(f"🛑 LOSS LIMIT HIT\n\nDaily P&L: ₹{DAILY_PNL:.0f}")
+            send_msg(f"🛑 LOSS LIMIT HIT\n\nContinuous P&L: ₹{DAILY_PNL:.0f}")
             return
 
         if len(POSITIONS) >= MAX_POSITIONS or not market_trend(): return
@@ -321,7 +304,6 @@ def scan_and_trade():
         candidates = []
         for i in range(0, len(scan_list), 4):
             chunk = scan_list[i:i+4]
-            # safe_download इस्तेमाल किया
             data = safe_download(chunk, period="100d", interval="1d", group_by='ticker', progress=False, threads=True)
 
             for symbol in chunk:
@@ -394,7 +376,6 @@ def monitor_positions():
     global DAILY_PNL, WINS, LOSSES
     try:
         if not POSITIONS: return
-        # safe_download इस्तेमाल किया
         data = safe_download(list(POSITIONS.keys()), period="1d", interval="1m", group_by='ticker', progress=False, threads=False)
         remove = []
 
@@ -480,7 +461,7 @@ def status(message):
 
     msg = (
         f"🚩 <b>V45 NSE250 BRAHMASTRA (SQLITE MASTER)</b> 🚩\n\n"
-        f"💰 Gross P&L: ₹{DAILY_PNL:.0f}\n"
+        f"💰 Total P&L: ₹{DAILY_PNL:.0f}\n"
         f"🏛️ Est. Tax (15%): ₹{tax_deducted:.0f}\n"
         f"💵 <b>आपका हिस्सा (20%): ₹{my_payout:.0f}</b>\n"
         f"📈 री-इन्वेस्टमेंट (80%): ₹{reinvest_amount:.0f}\n"
@@ -488,7 +469,7 @@ def status(message):
         f"📊 Open Positions: {len(POSITIONS)}/{MAX_POSITIONS}\n"
         f"✅ Wins: {WINS}  |  ❌ Losses: {LOSSES}\n"
         f"🎯 WinRate: {winrate:.1f}%\n\n"
-        f"🗄️ Database: SQLite Active (Timeout: 30s)\n"
+        f"🗄️ Database: SQLite Active (Continuous Tracking)\n"
     )
     bot.reply_to(message, msg, parse_mode="HTML")
 
@@ -496,7 +477,7 @@ def status(message):
 
 def main_loop():
     global MORNING_SENT, EVENING_SENT, POSITIONS, DAILY_PNL, WINS, LOSSES
-    logging.info("BOT STARTED WITH SQLITE MASTER ENGINE")
+    logging.info("BOT STARTED WITH SQLITE MASTER ENGINE (CONTINUOUS MODE)")
 
     while True:
         try:
@@ -514,15 +495,12 @@ def main_loop():
                 time.sleep(3600)
                 continue
 
-            # 3. तारीख बदलने पर ऑटोमैटिक रीसेट
-            reset_daily_state()
-
             if now.minute % 2 == 0 and now.second < 15:
                 try: requests.get("http://localhost:10000/", timeout=5)
                 except: pass
 
             if t == "09:20" and not MORNING_SENT:
-                send_msg("🚀 BOT ACTIVE\n\n✅ SQLITE Master Enabled\n✅ Holiday Shield Active\n✅ Daily Reset Loaded\n\nशुभ ट्रेडिंग 📈")
+                send_msg("🚀 BOT ACTIVE\n\n✅ SQLITE Master Enabled\n✅ Holiday Shield Active\n✅ Continuous Mode (No Reset)\n\nशुभ ट्रेडिंग 📈")
                 MORNING_SENT = True
                 EVENING_SENT = False
 
@@ -544,7 +522,7 @@ def main_loop():
                 
                 send_msg(
                     f"📊 <b>DAILY FINAL REPORT (V45 MASTER)</b>\n\n"
-                    f"💰 सकल लाभ (Gross): ₹{DAILY_PNL:.0f}\n"
+                    f"💰 कुल संचयी लाभ (Gross Total): ₹{DAILY_PNL:.0f}\n"
                     f"🏛️ टैक्स सुरक्षित किया (15%): ₹{tax_deducted:.0f}\n"
                     f"💵 <b>ललित जी का शुद्ध पेआउट (20%): ₹{my_payout:.0f}</b>\n"
                     f"📈 पुनर्निवेश राशि (80%): ₹{reinvest_amount:.0f}\n"
@@ -563,12 +541,15 @@ def main_loop():
 if __name__ == "__main__":
     Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
 
-    send_msg("🚀 V45 MASTER ENGINE UPGRADE DEPLOYED\n\n✅ SQLite Safe Connection Live\n✅ Holiday Shield Configured\n✅ Daily Reset Auto-Active\n✅ Safe Download Shield Enabled")
+    send_msg("🚀 V45 MASTER ENGINE DEPLOYED\n\n✅ SQLite Continuous Ledger Live\n✅ Holiday Shield Configured\n✅ Daily Reset REMOVED\n✅ Safe Download Shield Enabled")
 
     Thread(target=main_loop, daemon=True).start()
 
+    # क्रैश-प्रूफ पोलिंग लूप
     while True:
         try:
-            bot.polling(none_stop=True, timeout=60, long_polling_timeout=10)
+            logging.info("Telegram Polling Started...")
+            bot.polling(none_stop=True, timeout=90, long_polling_timeout=30)
         except Exception as e:
-            time.sleep(10)
+            logging.error(f"TELEGRAM POLLING ERROR: {e}")
+            time.sleep(15)
