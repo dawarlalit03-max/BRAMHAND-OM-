@@ -1,4 +1,4 @@
-# 🚩🚩 JAI SHREE RAM - V44 BRAHMASTRA NSE250 ULTRA-STABLE FINAL 🚩🚩
+# 🚩🚩 JAI SHREE RAM - V45 BRAHMASTRA NSE250 MASTER EDITION 🚩🚩
 
 import os
 import time
@@ -9,6 +9,7 @@ import yfinance as yf
 import pandas as pd
 import logging
 import requests
+import sqlite3
 
 from flask import Flask
 from threading import Thread
@@ -20,12 +21,11 @@ from ta.trend import ADXIndicator
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# ULTRA STABLE: टेलीग्राम को मजबूत मोड में चालू किया
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
-telebot.logger.setLevel(logging.CRITICAL) # फालतू के वार्निंग लॉग्स बंद
+telebot.logger.setLevel(logging.CRITICAL) 
 
 IST = pytz.timezone("Asia/Kolkata")
-DATA_FILE = "v44_nse250_state.json"
+DB_FILE = "v45_trading.db"
 
 CAPITAL = 100000
 RISK_PER_TRADE = 0.01
@@ -43,8 +43,14 @@ PARTIAL_BOOK_QTY = 0.50
 
 AUTO_EXIT_DAYS = 3
 ADX_THRESHOLD = 25
-
 BATCH_SIZE = 15 
+
+# ⭐ ललित जी स्पेशल: 2026 की मुख्य NSE छुट्टियां (Format: YYYY-MM-DD)
+NSE_HOLIDAYS = [
+    "2026-01-26", "2026-03-02", "2026-04-02", "2026-04-03", 
+    "2026-04-14", "2026-05-01", "2026-10-02", "2026-10-22", 
+    "2026-11-09", "2026-12-25"
+]
 
 # ================= LOGGING =================
 
@@ -53,65 +59,175 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# ================= FLASK =================
+# ================= FLASK (WEB SERVER) =================
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🚩 V44 NSE250 BRAHMASTRA LIVE & ALIVE 🚩"
+    return "🚩 V45 NSE250 BRAHMASTRA MASTER ENGINE LIVE 🚩"
 
-# ================= STORAGE =================
+# ================= SAFE DOWNLOAD (ANTIBAN SHIELD) =================
 
-def safe_save():
+def safe_download(*args, **kwargs):
+    """ललित जी स्पेशल: याहू क्रैश प्रोटेक्शन और एंटी-बैन स्पीड ब्रेकर"""
     try:
-        data = {
-            "positions": POSITIONS,
-            "daily_pnl": DAILY_PNL,
-            "wins": WINS,
-            "losses": LOSSES,
-            "date": str(datetime.now(IST).date())
-        }
-        temp = DATA_FILE + ".tmp"
-        with open(temp, "w") as f:
-            json.dump(data, f)
-        os.replace(temp, DATA_FILE)
+        time.sleep(1.5) # याहू को ब्लॉक करने से रोकने के लिए 1.5 सेकंड का आराम
+        return yf.download(*args, **kwargs)
     except Exception as e:
-        logging.error(f"SAVE ERROR: {e}")
+        logging.error(f"YF ERROR: {e}")
+        return pd.DataFrame() # क्रैश से बचने के लिए खाली डाटाफ्रेम भेजेगा
 
-def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r") as f:
-                data = json.load(f)
-            if data.get("date") == str(datetime.now(IST).date()):
-                return (
-                    data.get("positions", {}),
-                    data.get("daily_pnl", 0),
-                    data.get("wins", 0),
-                    data.get("losses", 0)
-                )
-        except Exception as e:
-            logging.error(f"LOAD ERROR: {e}")
-    return {}, 0, 0, 0
+# ================= SQLITE DATABASE ENGINE =================
 
-POSITIONS, DAILY_PNL, WINS, LOSSES = load_data()
+def init_db():
+    try:
+        # ⭐ ललित जी स्पेशल: timeout=30 और check_same_thread=False लॉक एरर से बचाएगा
+        conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS positions (
+                symbol TEXT PRIMARY KEY,
+                buy_price REAL,
+                qty INTEGER,
+                sl REAL,
+                target REAL,
+                entry_time TEXT,
+                be_done INTEGER DEFAULT 0,
+                partial_done INTEGER DEFAULT 0
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS daily_state (
+                date TEXT PRIMARY KEY,
+                daily_pnl REAL DEFAULT 0,
+                wins INTEGER DEFAULT 0,
+                losses INTEGER DEFAULT 0
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        logging.info("SQLite Database initialized with timeout=30.")
+    except Exception as e:
+        logging.error(f"DB INIT ERROR: {e}")
+
+init_db()
+
+def load_sqlite_state():
+    positions_dict = {}
+    daily_pnl, wins, losses = 0, 0, 0
+    today_str = str(datetime.now(IST).date())
+    
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT symbol, buy_price, qty, sl, target, entry_time, be_done, partial_done FROM positions")
+        rows = cursor.fetchall()
+        for row in rows:
+            positions_dict[row[0]] = {
+                "buy": row[1], "qty": row[2], "sl": row[3], "target": row[4],
+                "time": row[5], "be_done": bool(row[6]), "partial_done": bool(row[7])
+            }
+            
+        cursor.execute("SELECT daily_pnl, wins, losses FROM daily_state WHERE date = ?", (today_str,))
+        state = cursor.fetchone()
+        if state:
+            daily_pnl, wins, losses = state[0], state[1], state[2]
+        else:
+            cursor.execute("INSERT OR IGNORE INTO daily_state (date, daily_pnl, wins, losses) VALUES (?, 0, 0, 0)", (today_str,))
+            conn.commit()
+            
+        conn.close()
+    except Exception as e:
+        logging.error(f"DB LOAD ERROR: {e}")
+        
+    return positions_dict, daily_pnl, wins, losses
+
+# ग्लोबल स्टेट लोड करें
+POSITIONS, DAILY_PNL, WINS, LOSSES = load_sqlite_state()
 TRADING_HALTED = False
 SCAN_INDEX = 0
 MORNING_SENT = False
 EVENING_SENT = False
 CACHED_TREND = True
 LAST_TREND_CHECK = None
+LAST_RESET_DATE = str(datetime.now(IST).date())
 
-# ================= TELEGRAM =================
+def update_sqlite_position(symbol, pos_data, delete=False):
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
+        cursor = conn.cursor()
+        if delete:
+            cursor.execute("DELETE FROM positions WHERE symbol = ?", (symbol,))
+        else:
+            cursor.execute('''
+                INSERT OR REPLACE INTO positions (symbol, buy_price, qty, sl, target, entry_time, be_done, partial_done)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (symbol, pos_data['buy'], pos_data['qty'], pos_data['sl'], pos_data['target'], 
+                  pos_data['time'], int(pos_data['be_done']), int(pos_data['partial_done'])))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"DB POSITION UPDATE ERROR: {e}")
+
+def save_sqlite_daily_state():
+    try:
+        today_str = str(datetime.now(IST).date())
+        conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE daily_state SET daily_pnl = ?, wins = ?, losses = ? WHERE date = ?
+        ''', (DAILY_PNL, WINS, LOSSES, today_str))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.error(f"DB DAILY STATE UPDATE ERROR: {e}")
+
+# ⭐ ललित जी स्पेशल: ऑटोमैटिक नया ट्रेडिंग दिन रीसेट लॉजिक
+def reset_daily_state():
+    global DAILY_PNL, WINS, LOSSES, TRADING_HALTED, LAST_RESET_DATE
+
+    today = str(datetime.now(IST).date())
+
+    if today != LAST_RESET_DATE:
+        DAILY_PNL = 0
+        WINS = 0
+        LOSSES = 0
+        TRADING_HALTED = False
+        LAST_RESET_DATE = today
+        
+        try:
+            conn = sqlite3.connect(DB_FILE, timeout=30, check_same_thread=False)
+            cursor = conn.cursor()
+            cursor.execute('INSERT OR IGNORE INTO daily_state (date, daily_pnl, wins, losses) VALUES (?, 0, 0, 0)', (today,))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logging.error(f"SQLITE DAILY RESET ERROR: {e}")
+
+        send_msg("🌅 नया ट्रेडिंग दिन शुरू: पुराना हिसाब रीसेट कर दिया गया है।")
+
+# ================= TELEGRAM SEND FUNCTION =================
 
 def send_msg(msg):
     try:
+        if BOT_TOKEN and CHAT_ID in BOT_TOKEN:
+            logging.error("गड़बड़: CHAT_ID और BOT_TOKEN मैच हो रहे हैं! कृपया रेंडर पर CHAT_ID सही करें।")
+            return
         bot.send_message(CHAT_ID, f"🚩 जय श्री राम 🚩\n\n{msg}", parse_mode="HTML")
+    except telebot.apihelper.ApiTelegramException as e:
+        if e.error_code == 403:
+            logging.error(f"टेलीग्राम 403 एरर: CHAT_ID गलत है। विवरण: {e.description}")
+        else:
+            logging.error(f"TELEGRAM API ERROR: {e}")
     except Exception as e:
-        logging.error(f"TELEGRAM ERROR: {e}")
+        logging.error(f"TELEGRAM UNKNOWN ERROR: {e}")
 
-# ================= NSE250 SYMBOLS =================
+# ================= NSE250 SYMBOLS FETCH =================
 
 def get_nse250_symbols():
     try:
@@ -131,7 +247,7 @@ SECTOR_MAP = {
     "LT.NS": "INFRA", "SUNPHARMA.NS": "PHARMA", "TATAMOTORS.NS": "AUTO"
 }
 
-# ================= MARKET TREND =================
+# ================= MARKET TREND FILTER =================
 
 def market_trend():
     global CACHED_TREND, LAST_TREND_CHECK
@@ -140,7 +256,8 @@ def market_trend():
         return CACHED_TREND
         
     try:
-        nifty = yf.download("^NSEI", period="100d", interval="1d", progress=False, threads=False)
+        # yf.download की जगह safe_download इस्तेमाल किया
+        nifty = safe_download("^NSEI", period="100d", interval="1d", progress=False, threads=False)
         if nifty.empty or len(nifty) < 50:
             LAST_TREND_CHECK = now
             return CACHED_TREND
@@ -155,7 +272,7 @@ def market_trend():
     except Exception as e:
         return CACHED_TREND
 
-# ================= INDICATORS =================
+# ================= TECHNICAL INDICATORS =================
 
 def calculate_indicators(df):
     df = df.copy()
@@ -180,7 +297,7 @@ def calculate_indicators(df):
 
     return df.dropna()
 
-# ================= SCANNER =================
+# ================= SAFE BATCH SCANNER =================
 
 def scan_and_trade():
     global SCAN_INDEX, TRADING_HALTED
@@ -204,11 +321,8 @@ def scan_and_trade():
         candidates = []
         for i in range(0, len(scan_list), 4):
             chunk = scan_list[i:i+4]
-            try:
-                data = yf.download(chunk, period="100d", interval="1d", group_by='ticker', progress=False, threads=True)
-                time.sleep(1.5)
-            except:
-                continue
+            # safe_download इस्तेमाल किया
+            data = safe_download(chunk, period="100d", interval="1d", group_by='ticker', progress=False, threads=True)
 
             for symbol in chunk:
                 try:
@@ -265,7 +379,7 @@ def scan_and_trade():
                 "buy": float(price), "qty": qty, "sl": float(sl), "target": float(target),
                 "time": datetime.now(IST).isoformat(), "be_done": False, "partial_done": False
             }
-            safe_save()
+            update_sqlite_position(symbol, POSITIONS[symbol])
 
             send_msg(
                 f"🚀 BUY SIGNAL\n\nStock: {symbol.replace('.NS','')}\nPrice: ₹{price:.2f}\n"
@@ -274,13 +388,14 @@ def scan_and_trade():
     except Exception as e:
         logging.error(f"SCAN ERROR: {e}")
 
-# ================= MONITOR =================
+# ================= CONTINUOUS MONITORING =================
 
 def monitor_positions():
     global DAILY_PNL, WINS, LOSSES
     try:
         if not POSITIONS: return
-        data = yf.download(list(POSITIONS.keys()), period="1d", interval="1m", group_by='ticker', progress=False, threads=False)
+        # safe_download इस्तेमाल किया
+        data = safe_download(list(POSITIONS.keys()), period="1d", interval="1m", group_by='ticker', progress=False, threads=False)
         remove = []
 
         for symbol, pos in list(POSITIONS.items()):
@@ -296,16 +411,21 @@ def monitor_positions():
                     DAILY_PNL += pnl
                     pos['qty'] -= partial_qty
                     pos['partial_done'] = True
+                    update_sqlite_position(symbol, pos)
+                    save_sqlite_daily_state()
                     send_msg(f"💰 PARTIAL EXIT\n\n{symbol}\nP&L: ₹{pnl:.0f}")
 
                 if curr >= pos['buy'] * (1 + BREAK_EVEN_TRIGGER) and not pos['be_done']:
                     pos['sl'] = pos['buy']
                     pos['be_done'] = True
+                    update_sqlite_position(symbol, pos)
                     send_msg(f"🛡️ BREAK EVEN\n\n{symbol}")
 
                 if curr >= pos['buy'] * 1.03:
                     new_sl = curr * 0.98
-                    if new_sl > pos['sl']: pos['sl'] = new_sl
+                    if new_sl > pos['sl']: 
+                        pos['sl'] = new_sl
+                        update_sqlite_position(symbol, pos)
 
                 entry_time = datetime.fromisoformat(pos['time'])
                 if (datetime.now(IST) - entry_time).days >= AUTO_EXIT_DAYS:
@@ -313,35 +433,43 @@ def monitor_positions():
                     DAILY_PNL += pnl
                     if pnl >= 0: WINS += 1
                     else: LOSSES += 1
-                    send_msg(f"⏰ AUTO EXIT\n\n{symbol}\nP&L: ₹{pnl:.0f}")
                     remove.append(symbol)
+                    update_sqlite_position(symbol, None, delete=True)
+                    save_sqlite_daily_state()
+                    send_msg(f"⏰ AUTO EXIT\n\n{symbol}\nP&L: ₹{pnl:.0f}")
                     continue
 
                 if curr >= pos['target']:
                     pnl = (curr - pos['buy']) * pos['qty']
                     DAILY_PNL += pnl
                     WINS += 1
-                    send_msg(f"🎯 TARGET HIT\n\n{symbol}\nP&L: ₹{pnl:.0f}")
                     remove.append(symbol)
+                    update_sqlite_position(symbol, None, delete=True)
+                    save_sqlite_daily_state()
+                    send_msg(f"🎯 TARGET HIT\n\n{symbol}\nP&L: ₹{pnl:.0f}")
                 elif curr <= pos['sl']:
                     pnl = (curr - pos['buy']) * pos['qty']
                     DAILY_PNL += pnl
                     LOSSES += 1
-                    send_msg(f"🛑 STOPLOSS HIT\n\n{symbol}\nP&L: ₹{pnl:.0f}")
                     remove.append(symbol)
+                    update_sqlite_position(symbol, None, delete=True)
+                    save_sqlite_daily_state()
+                    send_msg(f"🛑 STOPLOSS HIT\n\n{symbol}\nP&L: ₹{pnl:.0f}")
             except Exception as e:
                 logging.error(f"{symbol} MONITOR ERROR: {e}")
 
         for s in remove:
             if s in POSITIONS: del POSITIONS[s]
-        safe_save()
     except Exception as e:
         logging.error(f"MONITOR ERROR: {e}")
 
-# ================= STATUS =================
+# ================= TELEGRAM COMMANDS =================
 
 @bot.message_handler(commands=['start', 'status'])
 def status(message):
+    global POSITIONS, DAILY_PNL, WINS, LOSSES
+    POSITIONS, DAILY_PNL, WINS, LOSSES = load_sqlite_state()
+    
     total = WINS + LOSSES
     winrate = ((WINS / total) * 100 if total > 0 else 0)
 
@@ -351,7 +479,7 @@ def status(message):
     reinvest_amount = net_pnl * 0.80 if DAILY_PNL > 0 else DAILY_PNL
 
     msg = (
-        f"🚩 <b>V44 NSE250 BRAHMASTRA</b> 🚩\n\n"
+        f"🚩 <b>V45 NSE250 BRAHMASTRA (SQLITE MASTER)</b> 🚩\n\n"
         f"💰 Gross P&L: ₹{DAILY_PNL:.0f}\n"
         f"🏛️ Est. Tax (15%): ₹{tax_deducted:.0f}\n"
         f"💵 <b>आपका हिस्सा (20%): ₹{my_payout:.0f}</b>\n"
@@ -360,32 +488,46 @@ def status(message):
         f"📊 Open Positions: {len(POSITIONS)}/{MAX_POSITIONS}\n"
         f"✅ Wins: {WINS}  |  ❌ Losses: {LOSSES}\n"
         f"🎯 WinRate: {winrate:.1f}%\n\n"
-        f"⚙️ Engine State: ULTRA-STABLE RUNNING\n"
+        f"🗄️ Database: SQLite Active (Timeout: 30s)\n"
     )
     bot.reply_to(message, msg, parse_mode="HTML")
 
-# ================= MAIN LOOP & PINGER =================
+# ================= CORE ENGINE LOOP =================
 
 def main_loop():
-    global MORNING_SENT, EVENING_SENT
-    logging.info("BOT STARTED")
+    global MORNING_SENT, EVENING_SENT, POSITIONS, DAILY_PNL, WINS, LOSSES
+    logging.info("BOT STARTED WITH SQLITE MASTER ENGINE")
 
     while True:
         try:
             now = datetime.now(IST)
             t = now.strftime("%H:%M")
+            today_str = str(now.date())
 
-            # रेंडर सर्वर को सोने से बचाने के लिए हर 2 मिनट में खुद को पिंग करेगा
+            # 1. शनिवार और रविवार को शटर गिराना
+            if now.weekday() >= 5:
+                time.sleep(3600)
+                continue
+
+            # 2. NSE छुट्टियों पर ब्रेक लगाना
+            if today_str in NSE_HOLIDAYS:
+                time.sleep(3600)
+                continue
+
+            # 3. तारीख बदलने पर ऑटोमैटिक रीसेट
+            reset_daily_state()
+
             if now.minute % 2 == 0 and now.second < 15:
                 try: requests.get("http://localhost:10000/", timeout=5)
                 except: pass
 
-            if t == "09:20" and not MORNING_SENT and now.weekday() < 5:
-                send_msg("🚀 BOT ACTIVE\n\n✅ Ultra-Stable Engine Live\n✅ Anti-Ban Active\n\nशुभ ट्रेडिंग 📈")
+            if t == "09:20" and not MORNING_SENT:
+                send_msg("🚀 BOT ACTIVE\n\n✅ SQLITE Master Enabled\n✅ Holiday Shield Active\n✅ Daily Reset Loaded\n\nशुभ ट्रेडिंग 📈")
                 MORNING_SENT = True
                 EVENING_SENT = False
 
-            if now.weekday() < 5 and dtime(9,20) <= now.time() <= dtime(15,30):
+            if dtime(9,20) <= now.time() <= dtime(15,30):
+                POSITIONS, DAILY_PNL, WINS, LOSSES = load_sqlite_state()
                 if now.minute % 5 == 0 and now.second < 10:
                     scan_and_trade()
                 monitor_positions()
@@ -393,16 +535,19 @@ def main_loop():
             else:
                 time.sleep(60)
 
-            if t == "15:30" and not EVENING_SENT and now.weekday() < 5:
+            if t == "15:30" and not EVENING_SENT:
+                POSITIONS, DAILY_PNL, WINS, LOSSES = load_sqlite_state()
                 tax_deducted = DAILY_PNL * 0.15 if DAILY_PNL > 0 else 0
                 net_pnl = DAILY_PNL - tax_deducted if DAILY_PNL > 0 else DAILY_PNL
                 my_payout = net_pnl * 0.20 if DAILY_PNL > 0 else 0
+                reinvest_amount = net_pnl * 0.80 if DAILY_PNL > 0 else DAILY_PNL
                 
                 send_msg(
-                    f"📊 <b>DAILY FINAL REPORT (NSE250)</b>\n\n"
+                    f"📊 <b>DAILY FINAL REPORT (V45 MASTER)</b>\n\n"
                     f"💰 सकल लाभ (Gross): ₹{DAILY_PNL:.0f}\n"
-                    f"🏛️ टैक्स सुरक्षित किया: ₹{tax_deducted:.0f}\n"
+                    f"🏛️ टैक्स सुरक्षित किया (15%): ₹{tax_deducted:.0f}\n"
                     f"💵 <b>ललित जी का शुद्ध पेआउट (20%): ₹{my_payout:.0f}</b>\n"
+                    f"📈 पुनर्निवेश राशि (80%): ₹{reinvest_amount:.0f}\n"
                     f"-------------------------------\n"
                     f"✅ Wins: {WINS}  |  ❌ Losses: {LOSSES}\n"
                     f"📈 Open Positions: {len(POSITIONS)}"
@@ -410,18 +555,18 @@ def main_loop():
                 EVENING_SENT = True
                 MORNING_SENT = False
         except Exception as e:
+            logging.error(f"MAIN LOOP EXCEPTION: {e}")
             time.sleep(15)
 
-# ================= START =================
+# ================= ENGINE START UP =================
 
 if __name__ == "__main__":
     Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
 
-    send_msg("🚀 V44 ULTRA-STABLE UPGRADE DEPLOYED\n\n✅ None-Stop Polling Active\n✅ Auto Self-Ping Enabled\n✅ Freeze Protection Live")
+    send_msg("🚀 V45 MASTER ENGINE UPGRADE DEPLOYED\n\n✅ SQLite Safe Connection Live\n✅ Holiday Shield Configured\n✅ Daily Reset Auto-Active\n✅ Safe Download Shield Enabled")
 
     Thread(target=main_loop, daemon=True).start()
 
-    # ULTRA-STABLE LOOP: यह टेलीग्राम कनेक्शन को कभी टूटने नहीं देगा
     while True:
         try:
             bot.polling(none_stop=True, timeout=60, long_polling_timeout=10)
