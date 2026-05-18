@@ -1,4 +1,4 @@
-# 🚩🚩 JAI SHREE RAM - V44 BRAHMASTRA AI PRO NSE250 FINAL 🚩🚩
+# 🚩🚩 JAI SHREE RAM - V44 BRAHMASTRA NSE250 ANTI-BAN FINAL 🚩🚩
 
 import os
 import time
@@ -43,9 +43,7 @@ ADX_THRESHOLD = 25
 
 SCAN_INTERVAL = 300
 MONITOR_INTERVAL = 60
-
-# NSE250 TIER SAFE BATCH
-BATCH_SIZE = 20
+BATCH_SIZE = 15 # SAFE FOR ANTI-BAN
 
 # ================= LOGGING =================
 
@@ -101,16 +99,14 @@ TRADING_HALTED = False
 SCAN_INDEX = 0
 MORNING_SENT = False
 EVENING_SENT = False
+CACHED_TREND = True
+LAST_TREND_CHECK = None
 
 # ================= TELEGRAM =================
 
 def send_msg(msg):
     try:
-        bot.send_message(
-            CHAT_ID,
-            f"🚩 जय श्री राम 🚩\n\n{msg}",
-            parse_mode="HTML"
-        )
+        bot.send_message(CHAT_ID, f"🚩 जय श्री राम 🚩\n\n{msg}", parse_mode="HTML")
     except Exception as e:
         logging.error(f"TELEGRAM ERROR: {e}")
 
@@ -128,8 +124,6 @@ def get_nse250_symbols():
 
 STOCKS = get_nse250_symbols()
 
-# ================= SECTOR MAP =================
-
 SECTOR_MAP = {
     "RELIANCE.NS": "ENERGY", "ONGC.NS": "ENERGY",
     "TCS.NS": "IT", "INFY.NS": "IT",
@@ -137,48 +131,33 @@ SECTOR_MAP = {
     "LT.NS": "INFRA", "SUNPHARMA.NS": "PHARMA", "TATAMOTORS.NS": "AUTO"
 }
 
-# ================= MARKET TREND =================
+# ================= MARKET TREND (ANTI-BAN UPDATED) =================
 
 def market_trend():
+    global CACHED_TREND, LAST_TREND_CHECK
+    now = datetime.now(IST)
+    
+    # याहू को बार-बार हिट होने से बचाने के लिए ट्रेंड सिर्फ हर 30 मिनट में एक बार चेक होगा
+    if LAST_TREND_CHECK is not None and (now - LAST_TREND_CHECK).seconds < 1800:
+        return CACHED_TREND
+        
     try:
-        nifty = yf.download(
-            "^NSEI",
-            period="100d",
-            interval="1d",
-            progress=False,
-            threads=True # FIXED: Fast scanning for trend
-        )
+        logging.info("Checking Market Trend...")
+        nifty = yf.download("^NSEI", period="100d", interval="1d", progress=False, threads=False)
         if nifty.empty or len(nifty) < 50:
-            return True
+            LAST_TREND_CHECK = now
+            return CACHED_TREND
 
         nifty['EMA50'] = nifty['Close'].ewm(span=50).mean()
         close = float(nifty['Close'].iloc[-1])
         ema50 = float(nifty['EMA50'].iloc[-1])
 
-        try:
-            vix = yf.download(
-                "^INDIAVIX",
-                period="5d",
-                interval="1d",
-                progress=False,
-                threads=True
-            )
-            if not vix.empty:
-                vix_now = float(vix['Close'].iloc[-1])
-                if vix_now > 22:
-                    send_msg(
-                        "⚠️ India VIX High\n\n"
-                        "Market volatile hai.\n"
-                        "New trades temporarily band."
-                    )
-                    return False
-        except:
-            pass
-
-        return close > ema50
+        CACHED_TREND = close > ema50
+        LAST_TREND_CHECK = now
+        return CACHED_TREND
     except Exception as e:
-        logging.error(f"MARKET TREND ERROR: {e}")
-        return True
+        logging.error(f"MARKET TREND ERROR (RATE LIMIT PASS): {e}")
+        return CACHED_TREND # एरर आने पर पुराने ट्रेंड को ही सही मानकर बॉट रुकेगा नहीं
 
 # ================= INDICATORS =================
 
@@ -233,66 +212,61 @@ def scan_and_trade():
         scan_list = available[start:end]
         SCAN_INDEX = 0 if end >= len(available) else end
 
-        logging.info(f"Scanning {len(scan_list)} stocks")
-
-        data = yf.download(
-            scan_list,
-            period="100d",
-            interval="1d",
-            group_by='ticker',
-            progress=False,
-            threads=True # FIXED: Enabled multi-threading for NSE250 speed
-        )
+        logging.info(f"Scanning {len(scan_list)} stocks safely...")
 
         candidates = []
-        for symbol in scan_list:
+        
+        # एंटी-बैन सुधार: एक साथ ब्लास्ट करने के बजाय 4-4 के छोटे ग्रुप में आराम से डेटा उठाएगा
+        for i in range(0, len(scan_list), 4):
+            chunk = scan_list[i:i+4]
             try:
-                df = data[symbol].copy() if isinstance(data.columns, pd.MultiIndex) else data.copy()
-                if df.empty or len(df) < 50:
-                    continue
-
-                df = calculate_indicators(df)
-                if len(df) < 50:
-                    continue
-
-                last = df.iloc[-1]
-                prev = df.iloc[-2]
-
-                adx = float(last['ADX'])
-                rsi = float(last['RSI'])
-                close = float(last['Close'])
-                ema20 = float(last['EMA20'])
-                ema50 = float(last['EMA50'])
-                prev_high = float(prev['High'])
-                atr = float(last['ATR'])
-                volume = float(last['Volume'])
-                avg_vol = float(df['Volume'].rolling(20).mean().iloc[-1])
-
-                if adx < ADX_THRESHOLD:
-                    continue
-                if not (55 < rsi < 70):
-                    continue
-                if close < ema50:
-                    continue
-
-                breakout = (close > prev_high and close > ema20)
-                if not breakout:
-                    continue
-
-                sector = SECTOR_MAP.get(symbol, "OTHER")
-                sector_count = sum(1 for s in POSITIONS if SECTOR_MAP.get(s) == sector)
-                if sector_count >= MAX_SECTOR_POSITIONS:
-                    continue
-
-                score = 50
-                if volume > avg_vol * 1.5:
-                    score += 20
-                if rsi > 60:
-                    score += 10
-
-                candidates.append((symbol, score, close, atr))
+                data = yf.download(chunk, period="100d", interval="1d", group_by='ticker', progress=False, threads=True)
+                time.sleep(1.5) # याहू के लिए छोटा सा स्पीड ब्रेकर
             except Exception as e:
-                logging.error(f"{symbol} ERROR: {e}")
+                logging.error(f"Chunk Download Error: {e}")
+                continue
+
+            for symbol in chunk:
+                try:
+                    df = data[symbol].copy() if isinstance(data.columns, pd.MultiIndex) else data.copy()
+                    if df.empty or len(df) < 50:
+                        continue
+
+                    df = calculate_indicators(df)
+                    if len(df) < 50:
+                        continue
+
+                    last = df.iloc[-1]
+                    prev = df.iloc[-2]
+
+                    adx = float(last['ADX'])
+                    rsi = float(last['RSI'])
+                    close = float(last['Close'])
+                    ema20 = float(last['EMA20'])
+                    ema50 = float(last['EMA50'])
+                    prev_high = float(prev['High'])
+                    atr = float(last['ATR'])
+                    volume = float(last['Volume'])
+                    avg_vol = float(df['Volume'].rolling(20).mean().iloc[-1])
+
+                    if adx < ADX_THRESHOLD or not (55 < rsi < 70) or close < ema50:
+                        continue
+
+                    if not (close > prev_high and close > ema20):
+                        continue
+
+                    sector = SECTOR_MAP.get(symbol, "OTHER")
+                    sector_count = sum(1 for s in POSITIONS if SECTOR_MAP.get(s) == sector)
+                    if sector_count >= MAX_SECTOR_POSITIONS:
+                        continue
+
+                    score = 50
+                    if volume > avg_vol * 1.5: score += 20
+                    if rsi > 60: score += 10
+
+                    candidates.append((symbol, score, close, atr))
+                except Exception as e:
+                    pass
 
         candidates.sort(key=lambda x: x[1], reverse=True)
 
@@ -302,37 +276,23 @@ def scan_and_trade():
 
             risk_amount = CAPITAL * RISK_PER_TRADE
             sl_distance = atr * ATR_SL_MULTIPLIER
-            if sl_distance <= 0:
-                continue
+            if sl_distance <= 0: continue
 
             qty = int(risk_amount / sl_distance)
-            if qty <= 0:
-                continue
-            if price * qty > CAPITAL * 0.20:
-                continue
+            if qty <= 0 or (price * qty > CAPITAL * 0.20): continue
 
             sl = price - sl_distance
             target = price + (atr * ATR_TARGET_MULTIPLIER)
 
             POSITIONS[symbol] = {
-                "buy": float(price),
-                "qty": qty,
-                "sl": float(sl),
-                "target": float(target),
-                "time": datetime.now(IST).isoformat(),
-                "be_done": False,
-                "partial_done": False
+                "buy": float(price), "qty": qty, "sl": float(sl), "target": float(target),
+                "time": datetime.now(IST).isoformat(), "be_done": False, "partial_done": False
             }
             safe_save()
 
             send_msg(
-                f"🚀 BUY SIGNAL\n\n"
-                f"Stock: {symbol.replace('.NS','')}\n"
-                f"Price: ₹{price:.2f}\n"
-                f"Qty: {qty}\n"
-                f"SL: ₹{sl:.2f}\n"
-                f"Target: ₹{target:.2f}\n"
-                f"Score: {score}"
+                f"🚀 BUY SIGNAL\n\nStock: {symbol.replace('.NS','')}\nPrice: ₹{price:.2f}\n"
+                f"Qty: {qty}\nSL: ₹{sl:.2f}\nTarget: ₹{target:.2f}\nScore: {score}"
             )
     except Exception as e:
         logging.error(f"SCAN ERROR: {e}")
@@ -345,21 +305,14 @@ def monitor_positions():
         if not POSITIONS:
             return
 
-        data = yf.download(
-            list(POSITIONS.keys()),
-            period="1d",
-            interval="1m",
-            group_by='ticker',
-            progress=False,
-            threads=True # FIXED: Enabled threads for live fast tracking
-        )
+        # मॉनिटरिंग के लिए भी सिंगल-थ्रेड और 1 मिनट का पूरा गैप रखेंगे
+        data = yf.download(list(POSITIONS.keys()), period="1d", interval="1m", group_by='ticker', progress=False, threads=False)
         remove = []
 
         for symbol, pos in list(POSITIONS.items()):
             try:
                 df = data[symbol] if isinstance(data.columns, pd.MultiIndex) else data
-                if df.empty:
-                    continue
+                if df.empty: continue
 
                 curr = float(df['Close'].iloc[-1])
 
@@ -378,17 +331,14 @@ def monitor_positions():
 
                 if curr >= pos['buy'] * 1.03:
                     new_sl = curr * 0.98
-                    if new_sl > pos['sl']:
-                        pos['sl'] = new_sl
+                    if new_sl > pos['sl']: pos['sl'] = new_sl
 
                 entry_time = datetime.fromisoformat(pos['time'])
                 if (datetime.now(IST) - entry_time).days >= AUTO_EXIT_DAYS:
                     pnl = (curr - pos['buy']) * pos['qty']
                     DAILY_PNL += pnl
-                    if pnl >= 0:
-                        WINS += 1
-                    else:
-                        LOSSES += 1
+                    if pnl >= 0: WINS += 1
+                    else: LOSSES += 1
                     send_msg(f"⏰ AUTO EXIT\n\n{symbol}\nP&L: ₹{pnl:.0f}")
                     remove.append(symbol)
                     continue
@@ -399,7 +349,6 @@ def monitor_positions():
                     WINS += 1
                     send_msg(f"🎯 TARGET HIT\n\n{symbol}\nP&L: ₹{pnl:.0f}")
                     remove.append(symbol)
-
                 elif curr <= pos['sl']:
                     pnl = (curr - pos['buy']) * pos['qty']
                     DAILY_PNL += pnl
@@ -407,32 +356,30 @@ def monitor_positions():
                     send_msg(f"🛑 STOPLOSS HIT\n\n{symbol}\nP&L: ₹{pnl:.0f}")
                     remove.append(symbol)
             except Exception as e:
-                logging.error(f"{symbol} ERROR: {e}")
+                logging.error(f"{symbol} MONITOR ERROR: {e}")
 
         for s in remove:
-            if s in POSITIONS:
-                del POSITIONS[s]
+            if s in POSITIONS: del POSITIONS[s]
         safe_save()
     except Exception as e:
         logging.error(f"MONITOR ERROR: {e}")
 
-# ================= STATUS (UPDATED WITH LALIT JI'S TAX METER) =================
+# ================= STATUS =================
 
 @bot.message_handler(commands=['start', 'status'])
 def status(message):
     total = WINS + LOSSES
     winrate = ((WINS / total) * 100 if total > 0 else 0)
 
-    # --- ललित जी का स्वर्ण टैक्स और पेआउट लॉजिक ---
     tax_deducted = 0
     my_payout = 0
     reinvest_amount = DAILY_PNL
 
     if DAILY_PNL > 0:
-        tax_deducted = DAILY_PNL * 0.15          # 15% सरकारी टैक्स अलग
-        net_pnl = DAILY_PNL - tax_deducted       # टैक्स कटने के बाद शुद्ध मुनाफा
-        my_payout = net_pnl * 0.20               # ललित जी की 20% शुद्ध जेब कमाई
-        reinvest_amount = net_pnl * 0.80         # वापस व्यापार में जाने वाला 80% पैसा
+        tax_deducted = DAILY_PNL * 0.15
+        net_pnl = DAILY_PNL - tax_deducted
+        my_payout = net_pnl * 0.20
+        reinvest_amount = net_pnl * 0.80
 
     msg = (
         f"🚩 <b>V44 NSE250 BRAHMASTRA</b> 🚩\n\n"
@@ -444,8 +391,7 @@ def status(message):
         f"📊 Open Positions: {len(POSITIONS)}/{MAX_POSITIONS}\n"
         f"✅ Wins: {WINS}  |  ❌ Losses: {LOSSES}\n"
         f"🎯 WinRate: {winrate:.1f}%\n\n"
-        f"🔍 NSE250 Scanner Active\n"
-        f"🤖 AI Filters Running\n"
+        f"🛡️ Anti-Ban System: RUNNING\n"
     )
     bot.reply_to(message, msg, parse_mode="HTML")
 
@@ -461,15 +407,7 @@ def main_loop():
             t = now.strftime("%H:%M")
 
             if t == "09:20" and not MORNING_SENT and now.weekday() < 5:
-                send_msg(
-                    "🚀 BOT ACTIVE\n\n"
-                    "✅ NSE250 Scanner Enabled\n"
-                    "✅ India VIX Filter Active\n"
-                    "✅ AI Momentum Detection\n"
-                    "✅ Risk Management Active\n"
-                    "✅ Breakout Scanner Active\n\n"
-                    "शुभ ट्रेडिंग 📈"
-                )
+                send_msg("🚀 BOT ACTIVE\n\n✅ NSE250 Safe Scanner Enabled\n✅ Anti-Ban Active\n\nशुभ ट्रेडिंग 📈")
                 MORNING_SENT = True
                 EVENING_SENT = False
 
@@ -481,20 +419,15 @@ def main_loop():
             else:
                 time.sleep(60)
 
-            # EVENING REPORT (UPDATED WITH LALIT JI'S TAX METER)
             if t == "15:30" and not EVENING_SENT and now.weekday() < 5:
                 tax_deducted = DAILY_PNL * 0.15 if DAILY_PNL > 0 else 0
                 net_pnl = DAILY_PNL - tax_deducted if DAILY_PNL > 0 else DAILY_PNL
                 my_payout = net_pnl * 0.20 if DAILY_PNL > 0 else 0
                 
                 send_msg(
-                    f"📊 <b>DAILY FINAL REPORT (NSE250)</b>\n\n"
-                    f"💰 सकल लाभ (Gross): ₹{DAILY_PNL:.0f}\n"
-                    f"🏛️ टैक्स सुरक्षित किया: ₹{tax_deducted:.0f}\n"
-                    f"💵 <b>ललित जी का शुद्ध पेआउट (20%): ₹{my_payout:.0f}</b>\n"
-                    f"-------------------------------\n"
-                    f"✅ Wins: {WINS}  |  ❌ Losses: {LOSSES}\n"
-                    f"📈 Open Positions: {len(POSITIONS)}"
+                    f"📊 <b>DAILY FINAL REPORT (NSE250)</b>\n\n💰 सकल लाभ (Gross): ₹{DAILY_PNL:.0f}\n"
+                    f"🏛️ टैक्स सुरक्षित किया: ₹{tax_deducted:.0f}\n💵 <b>ललित जी का शुद्ध पेआउट (20%): ₹{my_payout:.0f}</b>\n"
+                    f"-------------------------------\n✅ Wins: {WINS}  |  ❌ Losses: {LOSSES}\n📈 Open Positions: {len(POSITIONS)}"
                 )
                 EVENING_SENT = True
                 MORNING_SENT = False
@@ -507,21 +440,12 @@ def main_loop():
 if __name__ == "__main__":
     Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
 
-    send_msg(
-        "🚀 V44 NSE250 BRAHMASTRA STARTED\n\n"
-        "✅ NSE250 Active\n"
-        "✅ AI Scanner Active\n"
-        "✅ India VIX Protection Active\n"
-        "✅ Auto Recovery Active\n"
-        "✅ Telegram Alerts & Tax Meter Active"
-    )
+    send_msg("🚀 V44 NSE250 ANTI-BAN STARTED\n\n✅ 4-Stock Chunk Scanning Active\n✅ Cache Trend Enabled\n✅ Safe Rate Limit Active")
 
     Thread(target=main_loop, daemon=True).start()
 
     while True:
         try:
-            logging.info("Polling Started")
             bot.infinity_polling(timeout=20, long_polling_timeout=5)
         except Exception as e:
-            logging.error(f"POLL ERROR: {e}")
             time.sleep(15)
